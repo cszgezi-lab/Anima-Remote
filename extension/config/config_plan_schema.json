@@ -1,0 +1,1859 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anima-remote.local/schemas/config-plan-v1.json",
+  "title": "Anima Remote CONFIG_PLAN",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "mode",
+    "status",
+    "intent",
+    "discovery_ref",
+    "scope_policy",
+    "patches",
+    "knowledge_files",
+    "database_actions",
+    "retrieval_budget",
+    "summary_tag_contract",
+    "tag_retrieval_map",
+    "preconditions",
+    "validation",
+    "explanations",
+    "risk_flags",
+    "requires_confirmation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "anima-config-plan/1.0"
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "mode": {
+      "enum": [
+        "skill_newbie",
+        "skill_advanced"
+      ]
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "blocked",
+        "needs_input"
+      ]
+    },
+    "intent": {
+      "$ref": "#/$defs/Intent"
+    },
+    "discovery_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_policy": {
+      "$ref": "#/$defs/ScopePolicy"
+    },
+    "patches": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "global",
+        "character",
+        "chat"
+      ],
+      "properties": {
+        "global": {
+          "$ref": "#/$defs/ScopePatch"
+        },
+        "character": {
+          "$ref": "#/$defs/ScopePatch"
+        },
+        "chat": {
+          "$ref": "#/$defs/ScopePatch"
+        }
+      }
+    },
+    "knowledge_files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/KnowledgeFileAction"
+      },
+      "maxItems": 50
+    },
+    "database_actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DatabaseAction"
+      },
+      "maxItems": 50
+    },
+    "retrieval_budget": {
+      "$ref": "#/$defs/RetrievalBudget"
+    },
+    "summary_tag_contract": {
+      "$ref": "#/$defs/SummaryTagContract"
+    },
+    "tag_retrieval_map": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TagRetrievalRoute"
+      },
+      "maxItems": 100
+    },
+    "preconditions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Precondition"
+      },
+      "maxItems": 100
+    },
+    "validation": {
+      "$ref": "#/$defs/ValidationPlan"
+    },
+    "explanations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Explanation"
+      },
+      "maxItems": 100
+    },
+    "risk_flags": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RiskFlag"
+      },
+      "maxItems": 100
+    },
+    "requires_confirmation": {
+      "const": true
+    }
+  },
+  "$defs": {
+    "Intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_goals",
+        "memory_style",
+        "keep_user_messages",
+        "knowledge_need",
+        "state_authority"
+      ],
+      "properties": {
+        "primary_goals": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "relationship",
+              "persona",
+              "world",
+              "skill",
+              "combat",
+              "daily",
+              "balanced"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "memory_style": {
+          "enum": [
+            "conservative",
+            "enhanced",
+            "auto"
+          ]
+        },
+        "keep_user_messages": {
+          "enum": [
+            "yes",
+            "no",
+            "auto"
+          ]
+        },
+        "knowledge_need": {
+          "enum": [
+            "yes",
+            "no",
+            "auto"
+          ]
+        },
+        "state_authority": {
+          "enum": [
+            "mvu",
+            "ejs",
+            "anima",
+            "dual_explicit_sync",
+            "none",
+            "unknown"
+          ]
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "ScopePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "precedence",
+        "target_scopes",
+        "preserve_unknown_fields",
+        "array_merge"
+      ],
+      "properties": {
+        "precedence": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "global"
+            },
+            {
+              "const": "character"
+            },
+            {
+              "const": "chat"
+            }
+          ],
+          "items": false
+        },
+        "target_scopes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "global",
+              "character",
+              "chat"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "preserve_unknown_fields": {
+          "const": true
+        },
+        "array_merge": {
+          "const": "replace"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "ApiEndpointPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "stream": {
+          "type": "boolean"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "context_limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_output": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "top_k": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "current_channel": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        }
+      }
+    },
+    "ApiPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "llm": {
+          "$ref": "#/$defs/ApiEndpointPatch"
+        },
+        "status": {
+          "$ref": "#/$defs/ApiEndpointPatch"
+        },
+        "rag": {
+          "$ref": "#/$defs/ApiEndpointPatch"
+        },
+        "rerank": {
+          "$ref": "#/$defs/ApiEndpointPatch"
+        }
+      }
+    },
+    "PromptItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 200000
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "floors": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "SummaryOutputContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw_json_only",
+        "root_keys",
+        "summary_fields",
+        "tag_shape",
+        "dict_update_shape"
+      ],
+      "properties": {
+        "raw_json_only": {
+          "const": true
+        },
+        "root_keys": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "summaries"
+            },
+            {
+              "const": "dict_updates"
+            }
+          ],
+          "items": false
+        },
+        "summary_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "contains": {
+            "const": "summary"
+          }
+        },
+        "tag_shape": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "vibe",
+            "focus",
+            "special",
+            "important"
+          ],
+          "properties": {
+            "vibe": {
+              "type": "string"
+            },
+            "focus": {
+              "type": "string"
+            },
+            "special": {
+              "type": "string"
+            },
+            "important": {
+              "type": "string"
+            }
+          }
+        },
+        "dict_update_shape": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "canonical_field",
+            "alias_field"
+          ],
+          "properties": {
+            "canonical_field": {
+              "const": "index"
+            },
+            "alias_field": {
+              "const": "trigger"
+            }
+          }
+        }
+      }
+    },
+    "SummaryPromptSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "char_info",
+        "user_info",
+        "prev_summaries",
+        "summary_prompt",
+        "output_contract"
+      ],
+      "properties": {
+        "char_info": {
+          "$ref": "#/$defs/PromptItem"
+        },
+        "user_info": {
+          "$ref": "#/$defs/PromptItem"
+        },
+        "prev_summaries": {
+          "$ref": "#/$defs/PromptItem"
+        },
+        "summary_prompt": {
+          "$ref": "#/$defs/PromptItem"
+        },
+        "output_contract": {
+          "$ref": "#/$defs/SummaryOutputContract"
+        }
+      }
+    },
+    "SummaryPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trigger_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "hide_skip_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "regex_strings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "maxItems": 500
+        },
+        "output_regex": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "maxItems": 500
+        },
+        "skip_layer_zero": {
+          "type": "boolean"
+        },
+        "regex_skip_user": {
+          "type": "boolean"
+        },
+        "wrapper_template": {
+          "type": "string",
+          "maxLength": 50000
+        },
+        "group_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "summary_messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptItem"
+          },
+          "maxItems": 200
+        },
+        "auto_run": {
+          "type": "boolean"
+        },
+        "exclude_user": {
+          "type": "boolean"
+        },
+        "prompt_spec": {
+          "$ref": "#/$defs/SummaryPromptSpec"
+        }
+      }
+    },
+    "CountStrategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        }
+      }
+    },
+    "ImportantStrategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "labels",
+        "count"
+      ],
+      "properties": {
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "uniqueItems": true,
+          "maxItems": 100
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        }
+      }
+    },
+    "StatusRule": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "op": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "value": {}
+      }
+    },
+    "StatusStrategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "labels",
+        "count",
+        "rules"
+      ],
+      "properties": {
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "uniqueItems": true,
+          "maxItems": 100
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StatusRule"
+          },
+          "maxItems": 500
+        }
+      }
+    },
+    "RagStrategySettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidate_multiplier": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "important": {
+          "$ref": "#/$defs/ImportantStrategy"
+        },
+        "special": {
+          "$ref": "#/$defs/CountStrategy"
+        },
+        "period": {
+          "$ref": "#/$defs/CountStrategy"
+        },
+        "status": {
+          "$ref": "#/$defs/StatusStrategy"
+        },
+        "diversity": {
+          "$ref": "#/$defs/CountStrategy"
+        }
+      }
+    },
+    "Holiday": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "date",
+        "name"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "trigger_days": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 366
+        }
+      }
+    },
+    "PeriodEvent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "label"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "maxLength": 128
+        }
+      }
+    },
+    "PeriodConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PeriodEvent"
+          },
+          "maxItems": 500
+        }
+      }
+    },
+    "InjectionSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "position": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant"
+          ]
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "order": {
+          "type": "integer",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "recent_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "template": {
+          "type": "string",
+          "maxLength": 200000
+        }
+      }
+    },
+    "RagPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rag_enabled": {
+          "type": "boolean"
+        },
+        "base_life": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "imp_life": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "echo_max_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "rerank_enabled": {
+          "type": "boolean"
+        },
+        "rerank_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "min_score": {
+          "type": "number"
+        },
+        "base_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "virtual_time_mode": {
+          "type": "boolean"
+        },
+        "recent_weight": {
+          "type": "number"
+        },
+        "distributed_retrieval": {
+          "type": "boolean"
+        },
+        "strategy_settings": {
+          "$ref": "#/$defs/RagStrategySettings"
+        },
+        "candidate_multiplier": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "important": {
+          "$ref": "#/$defs/ImportantStrategy"
+        },
+        "special": {
+          "$ref": "#/$defs/CountStrategy"
+        },
+        "period": {
+          "$ref": "#/$defs/CountStrategy"
+        },
+        "status": {
+          "$ref": "#/$defs/StatusStrategy"
+        },
+        "diversity": {
+          "$ref": "#/$defs/CountStrategy"
+        },
+        "holidays": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Holiday"
+          },
+          "maxItems": 1000
+        },
+        "period_config": {
+          "$ref": "#/$defs/PeriodConfig"
+        },
+        "regex_strings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "maxItems": 500
+        },
+        "skip_layer_zero": {
+          "type": "boolean"
+        },
+        "regex_skip_user": {
+          "type": "boolean"
+        },
+        "vector_prompt": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptItem"
+          },
+          "maxItems": 200
+        },
+        "auto_vectorize": {
+          "type": "boolean"
+        },
+        "injection_settings": {
+          "$ref": "#/$defs/InjectionSettings"
+        },
+        "strategy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "position": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant"
+          ]
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "order": {
+          "type": "integer",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "recent_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "template": {
+          "type": "string",
+          "maxLength": 200000
+        }
+      }
+    },
+    "DictionaryWord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "trigger"
+      ],
+      "properties": {
+        "index": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "trigger": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "Dictionary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "words"
+      ],
+      "properties": {
+        "words": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DictionaryWord"
+          },
+          "maxItems": 50000
+        }
+      }
+    },
+    "Bm25ContentSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reuse_rag_regex": {
+          "type": "boolean"
+        },
+        "regex_list": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "maxItems": 500
+        },
+        "skip_layer_zero": {
+          "type": "boolean"
+        },
+        "regex_skip_user": {
+          "type": "boolean"
+        },
+        "exclude_user": {
+          "type": "boolean"
+        },
+        "prompt_items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptItem"
+          },
+          "maxItems": 200
+        }
+      }
+    },
+    "Bm25LibBinding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Bm25Patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bm25_enabled": {
+          "type": "boolean"
+        },
+        "auto_build": {
+          "type": "boolean"
+        },
+        "search_top_k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "custom_dicts": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Dictionary"
+          }
+        },
+        "dict_mapping": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "dict": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "dirty": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "content_settings": {
+          "$ref": "#/$defs/Bm25ContentSettings"
+        },
+        "reuse_rag_regex": {
+          "type": "boolean"
+        },
+        "regex_list": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "maxItems": 500
+        },
+        "skip_layer_zero": {
+          "type": "boolean"
+        },
+        "regex_skip_user": {
+          "type": "boolean"
+        },
+        "exclude_user": {
+          "type": "boolean"
+        },
+        "prompt_items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptItem"
+          },
+          "maxItems": 200
+        },
+        "current_dict": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "bound_dict": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "libs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Bm25LibBinding"
+          },
+          "maxItems": 1000
+        }
+      }
+    },
+    "KnowledgeBaseSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "delimiter": {
+          "type": "string",
+          "maxLength": 10000
+        },
+        "chunk_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "write_vector": {
+          "type": "boolean"
+        },
+        "write_bm25": {
+          "type": "boolean"
+        },
+        "dictionary": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "scan_floors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "search_top_k": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "min_score": {
+          "type": "number"
+        },
+        "bm25_top_k": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        }
+      }
+    },
+    "KnowledgeInjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "position": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant"
+          ]
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "order": {
+          "type": "integer",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "template": {
+          "type": "string",
+          "maxLength": 200000
+        }
+      }
+    },
+    "KnowledgeLibBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "vector_enabled",
+        "bm25_enabled"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "vector_enabled": {
+          "type": "boolean"
+        },
+        "bm25_enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "KnowledgePatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kb_enabled": {
+          "type": "boolean"
+        },
+        "knowledge_base": {
+          "$ref": "#/$defs/KnowledgeBaseSettings"
+        },
+        "delimiter": {
+          "type": "string",
+          "maxLength": 10000
+        },
+        "chunk_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "write_vector": {
+          "type": "boolean"
+        },
+        "write_bm25": {
+          "type": "boolean"
+        },
+        "dictionary": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "scan_floors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "search_top_k": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "min_score": {
+          "type": "number"
+        },
+        "bm25_top_k": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "knowledge_injection": {
+          "$ref": "#/$defs/KnowledgeInjection"
+        },
+        "strategy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "position": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant"
+          ]
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "order": {
+          "type": "integer",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "template": {
+          "type": "string",
+          "maxLength": 200000
+        },
+        "libs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/KnowledgeLibBinding"
+          },
+          "maxItems": 1000
+        },
+        "dict_mapping": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "GcSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reuse_regex": {
+          "type": "boolean"
+        },
+        "skip_layer_zero": {
+          "type": "boolean"
+        },
+        "regex_skip_user": {
+          "type": "boolean"
+        },
+        "exclude_user": {
+          "type": "boolean"
+        },
+        "regex_list": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "maxItems": 500
+        }
+      }
+    },
+    "BeautifySettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "template": {
+          "type": "string",
+          "maxLength": 200000
+        }
+      }
+    },
+    "StatusPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status_enabled": {
+          "type": "boolean"
+        },
+        "current_status_yaml": {
+          "type": "string",
+          "maxLength": 1000000
+        },
+        "prompt_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptItem"
+          },
+          "maxItems": 500
+        },
+        "gc_settings": {
+          "$ref": "#/$defs/GcSettings"
+        },
+        "beautify_settings": {
+          "$ref": "#/$defs/BeautifySettings"
+        },
+        "injection_settings": {
+          "$ref": "#/$defs/InjectionSettings"
+        },
+        "zod_settings": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "greeting_presets": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "gc_prompts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptItem"
+          },
+          "maxItems": 500
+        }
+      }
+    },
+    "ScopePatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api": {
+          "$ref": "#/$defs/ApiPatch"
+        },
+        "summary": {
+          "$ref": "#/$defs/SummaryPatch"
+        },
+        "rag": {
+          "$ref": "#/$defs/RagPatch"
+        },
+        "bm25": {
+          "$ref": "#/$defs/Bm25Patch"
+        },
+        "knowledge": {
+          "$ref": "#/$defs/KnowledgePatch"
+        },
+        "status": {
+          "$ref": "#/$defs/StatusPatch"
+        }
+      }
+    },
+    "KnowledgeFileAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "source",
+        "purpose"
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "import_and_bind",
+            "bind_existing",
+            "unbind_existing",
+            "none"
+          ]
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "selected_file",
+                "existing_library"
+              ]
+            },
+            "client_file_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 1024
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 1024
+            },
+            "mime_or_ext": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "library_name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 512
+            }
+          }
+        },
+        "purpose": {
+          "enum": [
+            "original_work",
+            "world_lore",
+            "character_lore",
+            "rules",
+            "other"
+          ]
+        },
+        "target_library_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "write_vector": {
+          "type": "boolean"
+        },
+        "write_bm25": {
+          "type": "boolean"
+        },
+        "dictionary": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "bind_to_current_character": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "DatabaseAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "target",
+        "reason",
+        "destructive"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "rebuild_chat_vectors",
+            "rebuild_kb_vectors",
+            "rebuild_bm25",
+            "mark_bm25_dirty",
+            "rebind_only",
+            "none"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "destructive": {
+          "const": false
+        },
+        "requires_confirmation": {
+          "type": "boolean"
+        }
+      }
+    },
+    "RetrievalBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "context_limit_known",
+        "estimated_context_limit",
+        "base_slots",
+        "important_label_count",
+        "important_count_per_label",
+        "important_worst_case_slots",
+        "status_worst_case_slots",
+        "period_worst_case_slots",
+        "holiday_worst_case_slots",
+        "diversity_slots",
+        "recent_history_slots",
+        "echo_max_count",
+        "candidate_multiplier",
+        "estimated_pre_rerank_slots",
+        "estimated_candidate_slots",
+        "safe"
+      ],
+      "properties": {
+        "profile": {
+          "enum": [
+            "conservative",
+            "enhanced"
+          ]
+        },
+        "context_limit_known": {
+          "type": "boolean"
+        },
+        "estimated_context_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "base_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "important_label_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "important_count_per_label": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "important_worst_case_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status_worst_case_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "period_worst_case_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "holiday_worst_case_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "diversity_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "recent_history_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "echo_max_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "candidate_multiplier": {
+          "type": "number",
+          "minimum": 1
+        },
+        "estimated_pre_rerank_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "estimated_candidate_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "estimated_memory_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "memory_context_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "safe": {
+          "type": "boolean"
+        },
+        "violations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "maxItems": 100
+        }
+      }
+    },
+    "SummaryTagContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vibe",
+        "focus",
+        "special",
+        "reserved_runtime_tags"
+      ],
+      "properties": {
+        "vibe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "focus": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "special": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "reserved_runtime_tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "important_is_boolean": {
+          "const": true
+        }
+      }
+    },
+    "TagRetrievalRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "source",
+        "route",
+        "forced",
+        "reason"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source": {
+          "enum": [
+            "summary_focus",
+            "summary_special",
+            "summary_important",
+            "runtime_status",
+            "runtime_period",
+            "runtime_holiday"
+          ]
+        },
+        "route": {
+          "enum": [
+            "important_labels",
+            "base_vector",
+            "bm25",
+            "status_step",
+            "period_step",
+            "holiday_special_step",
+            "none"
+          ]
+        },
+        "forced": {
+          "type": "boolean"
+        },
+        "desired_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "Precondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "required",
+        "satisfied",
+        "message"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "satisfied": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "local_action": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      }
+    },
+    "ValidationPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "json_schema",
+        "secret_scan",
+        "scope_capabilities",
+        "summary_prompt_tags",
+        "distributed_tag_linkage",
+        "retrieval_budget",
+        "bm25_dictionary",
+        "knowledge",
+        "state_conflict",
+        "api",
+        "unknown_field_preservation",
+        "post_apply_readback"
+      ],
+      "properties": {
+        "json_schema": {
+          "const": true
+        },
+        "secret_scan": {
+          "const": true
+        },
+        "scope_capabilities": {
+          "const": true
+        },
+        "summary_prompt_tags": {
+          "const": true
+        },
+        "distributed_tag_linkage": {
+          "const": true
+        },
+        "retrieval_budget": {
+          "const": true
+        },
+        "bm25_dictionary": {
+          "const": true
+        },
+        "knowledge": {
+          "const": true
+        },
+        "state_conflict": {
+          "const": true
+        },
+        "api": {
+          "const": true
+        },
+        "unknown_field_preservation": {
+          "const": true
+        },
+        "post_apply_readback": {
+          "const": true
+        }
+      }
+    },
+    "Explanation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "module",
+        "field",
+        "reason"
+      ],
+      "properties": {
+        "scope": {
+          "enum": [
+            "global",
+            "character",
+            "chat",
+            "database",
+            "knowledge_file"
+          ]
+        },
+        "module": {
+          "enum": [
+            "api",
+            "summary",
+            "rag",
+            "bm25",
+            "knowledge",
+            "status",
+            "database"
+          ]
+        },
+        "field": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "RiskFlag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "severity",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "blocking"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    }
+  }
+}
+
+
