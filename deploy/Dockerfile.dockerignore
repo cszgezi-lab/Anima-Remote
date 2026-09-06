@@ -1,0 +1,14 @@
+.git
+.gitignore
+deploy/.env
+deploy/data
+deploy/backups
+docs
+extension
+integration-tests
+server/node_modules
+server/data
+server/vectors
+extension/node_modules
+integration-tests/node_modules
+**/*.log

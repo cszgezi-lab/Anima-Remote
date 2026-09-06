@@ -1,0 +1,13 @@
+{
+  "name": "anima-remote-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "license": "CC-BY-NC-4.0",
+  "scripts": {
+    "test": "npm run test:server && npm run test:extension && npm run test:integration",
+    "test:server": "npm --prefix server test",
+    "test:extension": "npm --prefix extension test",
+    "test:integration": "npm --prefix integration-tests test",
+    "test:local": "node integration-tests/run-local-blackbox.js"
+  }
+}

@@ -1,0 +1,32 @@
+{
+    "name": "anima-rag",
+    "version": "1.0.0",
+    "description": "Anima RAG: Backend 2-1-2-1 Logic",
+    "main": "index.js",
+    "scripts": {
+        "start": "node standalone.js",
+        "token": "node cli.js",
+        "test": "node --test tests/*.test.js",
+        "postinstall": "patch-package"
+    },
+    "keywords": [
+        "sillytavern",
+        "rag",
+        "vectra"
+    ],
+    "author": "User",
+    "license": "CC-BY-NC-4.0",
+    "dependencies": {
+        "adm-zip": "^0.6.0",
+        "cors": "^2.8.5",
+        "express": "^5.1.0",
+        "jieba-wasm": "^2.4.0",
+        "js-yaml": "^4.1.1",
+        "minisearch": "^7.2.0",
+        "patch-package": "^8.0.0",
+        "postinstall-postinstall": "^2.1.0",
+        "undici": "^7.29.1",
+        "vectra": "^0.12.3",
+        "zod": "^3.25.76"
+    }
+}

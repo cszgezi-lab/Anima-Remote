@@ -1,0 +1,4 @@
+*.sh text eol=lf
+deploy/healthcheck text eol=lf
+deploy/token-cli.js text eol=lf
+integration-tests/run-local-blackbox.js text eol=lf

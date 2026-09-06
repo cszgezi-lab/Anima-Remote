@@ -1,0 +1,2125 @@
+import {
+  toggleAllSummariesState,
+  syncRagSettingsToWorldbook,
+} from "./worldbook_api.js"; // 🟢 引入 updateSummaryContent
+
+import { getSmartCollectionId, escapeHtml } from "./utils.js";
+import { RegexListComponent, getRegexModalHTML } from "./regex_ui.js";
+import {
+  renderStrategyTable,
+  renderPromptList,
+  renderFileList,
+  renderHolidayModal,
+  constructRagQueryMock,
+  renderTagTable,
+  renderUnifiedFileList,
+} from "./rag_ui_components.js";
+
+import {
+  showVectorStatusModal,
+  checkAndSyncDirtyVectors,
+} from "./rag_status.js";
+import { getAvailableCollections } from "./db_api.js";
+import { mergeSettingsScopes, requestAnima, scheduleAnimaSettingsSync } from "./transport.js";
+
+let regexComponent = null;
+// ==========================================
+// rag.js - RAG 向量数据库设置界面 (V4 - 完美复刻版)
+// ==========================================
+// 1. 定义一个内存变量
+let _lastRetrievalResult = null;
+
+// ✅ 2. 新增：导出清理函数
+export function clearLastRetrievalResult() {
+  _lastRetrievalResult = null;
+  $("#rag_btn_last_result").removeClass("glow-effect"); // 去掉高亮
+  // console.log("[Anima RAG] Last result cache cleared.");
+}
+
+// 3. 导出这个更新函数 (这就 rag_logic.js 调用的那个)
+export function updateLastRetrievalResult(data) {
+  _lastRetrievalResult = data;
+
+  // 可选：给按钮加个视觉反馈，告诉用户有新数据了
+  const $btn = $("#rag_btn_last_result");
+  $btn.addClass("glow-effect");
+  // 你可以在 CSS 里加个简单动画，或者只是简单地闪烁一下
+  setTimeout(() => $btn.removeClass("glow-effect"), 1000);
+}
+
+const PARENT_MODULE_NAME = "anima_memory_system";
+
+// 默认全局设置
+export const DEFAULT_RAG_SETTINGS = {
+  rag_enabled: true,
+
+  base_life: 1, // 基础粘性
+  imp_life: 2, // 重要粘性
+  echo_max_count: 10, // 最大总量
+  rerank_enabled: false, // 默认关闭重排
+  rerank_count: 30, // 重排后最终保留的数量
+
+  // === 1. 基础区域 (通用) ===
+  min_score: 0.2,
+  base_count: 2, // 既是未开启时的总数，也是开启后的“基础切片”数量
+  // 虚拟时间模式 (新增)
+  virtual_time_mode: false,
+  recent_weight: 0.05,
+  // === 2. 分布式策略开关 ===
+  distributed_retrieval: true,
+
+  // === 3. 详细策略配置 (新) ===
+  strategy_settings: {
+    candidate_multiplier: 2,
+    important: { labels: ["Important"], count: 1 },
+    // 节日 (自动匹配)
+    special: { count: 1 },
+    // 🔥 新增：生理 (Period) 独立配置
+    period: { count: 1 },
+    // 状态 (Status) 独立配置
+    status: {
+      labels: ["Sick", "Injury"], // 这里的 labels 变为“只读”，由 rules 自动生成用于显示
+      count: 1,
+      // 新增 rules 数组
+      rules: [
+        // 示例结构
+        // { tag: "Injury", path: "Player.HP", op: "<", value: "50" },
+        // { tag: "Sick", path: "Player.Status", op: "includes", value: "Sick" }
+      ],
+    },
+
+    diversity: { count: 2 },
+  },
+
+  holidays: [{ date: "12-25", name: "Christmas", trigger_days: 7 }], // 示例数据
+  // 生理周期配置 (新增)
+  period_config: {
+    enabled: true, // 默认开启
+    events: [], // 默认清空 (空数组)
+  },
+
+  regex_strings: [],
+  skip_layer_zero: true,
+  regex_skip_user: true, // 注意补全这个之前的配置
+  vector_prompt: [{ type: "context", count: 2 }],
+  auto_vectorize: true,
+  injection_settings: {
+    strategy: "constant", // constant | selective
+    position: "at_depth", // at_depth | before_character_definition | after_character_definition
+    role: "system", // system | user | assistant
+    depth: 9999,
+    order: 100,
+    recent_count: 2,
+    template:
+      "<recalledMemories>[IMPORTANT: The following are retrieved HISTORICAL memories. Use them ONLY to enrich internal monologues, add nostalgia, or reference the past. They are STRICTLY THE PAST. You MUST NOT treat them as current events.]\n{{chatHistory}}\n</recalledMemories>\n<immediateHistory>\n{{recent_history}}\n</immediateHistory>",
+  },
+};
+
+const CHARACTER_SETTING_KEYS = [
+  "distributed_retrieval",
+  "virtual_time_mode",
+  "strategy_settings", // 包含 Important, Special, Period, Status, Diversity
+  "holidays", // 节日配置通常也跟角色世界观相关
+  "period_config", // 生理期配置跟角色绑定
+];
+const GLOBAL_STRATEGY_SUB_KEYS = ["candidate_multiplier"];
+// ==========================================
+// 1. 数据存取逻辑
+// ==========================================
+export function getRagSettings() {
+  const context = SillyTavern.getContext();
+
+  // A. 基础：获取全局设置（包含技术参数）
+  const parentSettings = context.extensionSettings[PARENT_MODULE_NAME] || {};
+  const globalSettings =
+    parentSettings.rag || structuredClone(DEFAULT_RAG_SETTINGS);
+  let merged = { ...globalSettings };
+
+  // B. 覆盖：尝试从角色卡读取个性化策略
+  const charId = context.characterId;
+  let charSettings = {};
+  if (charId !== undefined) {
+    const character = context.characters[charId];
+    const charExtensions = character?.data?.extensions?.anima_rag_settings;
+
+    if (charExtensions) {
+      CHARACTER_SETTING_KEYS.forEach((key) => {
+        if (Object.hasOwn(charExtensions, key)) charSettings[key] = charExtensions[key];
+      });
+    }
+  }
+
+  const chatSettings = context.chatMetadata?.anima_rag_settings || {};
+  merged = mergeSettingsScopes(globalSettings, charSettings, chatSettings);
+
+  // C. 特殊处理：确保 candidate_multiplier 始终取自全局
+  if (merged.strategy_settings) {
+    merged.strategy_settings.candidate_multiplier =
+      merged.strategy_settings.candidate_multiplier ??
+      globalSettings.candidate_multiplier ??
+      2;
+  }
+
+  return merged;
+}
+
+export async function saveRagSettings(settings) {
+  const context = SillyTavern.getContext();
+
+  // --- 1. 处理全局部分 (extensionSettings) ---
+  if (!context.extensionSettings[PARENT_MODULE_NAME]) {
+    context.extensionSettings[PARENT_MODULE_NAME] = {};
+  }
+
+  const globalPart = structuredClone(settings);
+  // 移除角色卡特有的个性化配置
+  CHARACTER_SETTING_KEYS.forEach((key) => delete globalPart[key]);
+
+  // 强制将倍率存入全局根目录或保留在全局对象中
+  globalPart.candidate_multiplier =
+    settings.strategy_settings?.candidate_multiplier || 2;
+
+  context.extensionSettings[PARENT_MODULE_NAME].rag = globalPart;
+  context.saveSettingsDebounced();
+  void scheduleAnimaSettingsSync({ reason: "rag_settings_changed" }).catch((error) => {
+    console.warn("[Anima] RAG 设置同步失败:", error?.message || "未知错误");
+  });
+
+  // --- 2. 处理角色卡部分 (Character Extensions) ---
+  const charId = context.characterId;
+  if (charId !== undefined) {
+    const charPart = {};
+    CHARACTER_SETTING_KEYS.forEach((key) => {
+      if (settings[key] !== undefined) {
+        charPart[key] = structuredClone(settings[key]);
+      }
+    });
+
+    // 角色卡内不存储全局技术参数 (倍率)
+    if (charPart.strategy_settings) {
+      delete charPart.strategy_settings.candidate_multiplier;
+    }
+
+    await context.writeExtensionField(charId, "anima_rag_settings", charPart);
+  }
+}
+
+export function getChatRagFiles() {
+  const context = SillyTavern.getContext();
+  if (!context.chatId || !context.chatMetadata) return [];
+
+  // 如果是 undefined (从未设置过)，返回 undefined 以便 init 判断“首次”
+  return context.chatMetadata["anima_rag_active_files"];
+}
+
+export async function saveChatRagFiles(files) {
+  const context = SillyTavern.getContext();
+  if (!context.chatId) return;
+
+  // 🟢 核心修复：强制去重，过滤空值
+  const uniqueFiles = [...new Set(files)].filter(Boolean);
+
+  context.chatMetadata["anima_rag_active_files"] = uniqueFiles;
+  await context.saveMetadata();
+  void scheduleAnimaSettingsSync({ reason: "chat_rag_files_changed" }).catch((error) => {
+    console.warn("[Anima] 聊天设置同步失败:", error?.message || "未知错误");
+  });
+  console.log("[Anima RAG] Metadata saved:", uniqueFiles);
+}
+
+// ==========================================
+// 2. 初始化入口
+// ==========================================
+
+export function initRagSettings() {
+  const container = document.getElementById("tab-rag");
+  if (!container) return;
+
+  const context = SillyTavern.getContext();
+  const currentChatId = context ? context.chatId : null;
+  const settings = getRagSettings();
+
+  // 1. 获取 Metadata 中的数据
+  let ragFiles = getChatRagFiles();
+
+  // 🟢 修改点 A：记录是否是初次加载（undefined）
+  const isFirstLoad = ragFiles === undefined;
+
+  // 🟢 修改点 B：不再强行绑定 currentChatId！
+  // 如果是 undefined，就初始化为空数组，保持界面干净
+  ragFiles = ragFiles || [];
+
+  renderMainUI(container, settings, ragFiles, currentChatId);
+
+  // 🟢 修改点 C：异步执行“智能发现”逻辑
+  // 只有在从未设置过（FirstLoad）且有聊天ID时才检查
+  if (isFirstLoad && currentChatId) {
+    tryAutoBindExistingDB();
+  }
+}
+
+// 🟢 新增辅助函数：尝试自动绑定已存在的、命名正确的数据库
+async function tryAutoBindExistingDB() {
+  // 1. 获取标准化的后端ID (e.g. "角色名_2023-05-12_...")
+  const smartId = getSmartCollectionId();
+  if (!smartId) return;
+
+  try {
+    // 2. 问后端：你有哪些数据库？
+    const availableDbs = await getAvailableCollections();
+
+    // 3. 检查：我们要找的 smartId 是否真的存在？
+    if (availableDbs && availableDbs.includes(smartId)) {
+      console.log(`[Anima RAG] 发现已存在的同名数据库，自动关联: ${smartId}`);
+
+      // 4. 存在才关联，并且关联的是 smartId (带下划线的)，不是原始 ID
+      await saveChatRagFiles([smartId]);
+
+      // 5. 刷新界面显示
+      renderUnifiedFileList();
+    } else {
+      console.log(`[Anima RAG] 暂无同名数据库 (${smartId})，保持未关联状态。`);
+      // 什么都不做，界面保持为空，符合你的要求
+    }
+  } catch (e) {
+    console.warn("[Anima RAG] 自动关联检查失败:", e);
+  }
+}
+
+// ==========================================
+// 3. 渲染逻辑
+// ==========================================
+
+function renderMainUI(container, settings, ragFiles, currentChatId) {
+  const safeRagFiles = ragFiles || [];
+
+  const styleFix = `
+    <style>
+        /* 复用 Summary 样式 */
+        .anima-rag-tag-table { width: 100%; border-collapse: collapse; margin-top: 10px; background: rgba(0,0,0,0.1); border-radius: 4px; }
+        .anima-rag-tag-table th, .anima-rag-tag-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .anima-rag-tag-table th { font-size: 12px; color: #aaa; font-weight: normal; }
+        .anima-rag-file-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 4px; margin-bottom: 5px; border: 1px solid transparent; }
+        .anima-rag-file-item:hover { border-color: rgba(255,255,255,0.1); background: rgba(255,255,255,0.08); }
+        
+        /* 提示词列表样式 */
+        .anima-prompt-item { background: rgba(0,0,0,0.2); border: 1px solid #444; border-radius: 4px; padding: 10px; margin-bottom: 8px; }
+        .anima-prompt-item.context { border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
+        .anima-drag-handle { cursor: grab; color: #888; margin-right: 10px; }
+        
+        /* 正则列表样式 (Row模式) */
+        .anima-regex-item.is-row { background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px; padding: 8px; margin-bottom: 5px; }
+        select.anima-select.edit-type {
+            height: 30px !important;        /* 设定合适的固定高度 */
+            min-height: 30px !important;
+            line-height: 28px !important;   /* 核心：行高 = 高度减去上下边框(通常2px)，实现垂直居中 */
+            padding-top: 0 !important;      /* 抹除 ST 原生可能带来的畸形顶部 Padding */
+            padding-bottom: 0 !important;   /* 抹除 ST 原生可能带来的畸形底部 Padding */
+            padding-left: 8px !important;   /* 保持左侧呼吸感 */
+            box-sizing: border-box !important;
+            vertical-align: middle !important;
+        }
+        /* 历史记录/向量状态样式 */
+        .anima-history-entry { margin-bottom: 5px; border: 1px solid #444; border-radius: 4px; background: rgba(0,0,0,0.2); }
+        .anima-history-header { padding: 8px 10px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .anima-history-content { display: none; padding: 10px; border-top: 1px solid rgba(255,255,255,0.05); white-space: pre-wrap; word-wrap: break-word; opacity: 1 !important; mask-image: none !important; }
+        .anima-tag-badge { background:rgba(255,255,255,0.1); padding:2px 8px; border-radius:10px; font-size:12px; margin-right:5px; border:1px solid #555; }
+        
+        /* 辅助类 */
+        .hidden { display: none !important; }
+        
+        /* 🟢 修复：注入配置模块样式 */
+        .anima-compact-input { display: flex; flex-direction: column; gap: 4px; }
+        .anima-label-small { font-size: 12px; color: #aaa; font-weight: bold; margin-bottom: 2px; }
+        
+        /* 🟢 核心修复：强制增加高度，防止文字被遮挡 */
+        .rag-inject-control {
+            height: 38px !important;       /* 增加高度 */
+            min-height: 38px !important;
+            font-size: 13px !important;
+            padding: 0 10px !important;    /* 左右内边距 */
+            line-height: 36px !important;  /* 垂直居中 */
+            box-sizing: border-box !important;
+        }
+        select.rag-inject-control {
+            appearance: auto;              /* 确保下拉箭头显示 */
+            padding-right: 25px !important;
+        }
+        
+        .disabled-input { opacity: 0.5; pointer-events: none; filter: grayscale(1); }
+
+        /* 新增：通用输入框样式 */
+        .anima-textarea {
+            width: 100%;
+            background-color: rgba(0, 0, 0, 0.2); /* 稍微调整以适配 RAG 的深色背景 */
+            border: 1px solid #444;
+            color: #eee;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            font-size: 13px;
+            box-sizing: border-box;
+            resize: vertical;
+        }
+        .anima-textarea:focus {
+            outline: none;
+            border-color: var(--anima-primary);
+            background-color: rgba(0, 0, 0, 0.3);
+        }
+
+    </style>`;
+
+  const masterSwitchHtml = `
+        <div class="anima-setting-group" style="margin-bottom: 10px;">
+            <div class="anima-card" style="border-left: 4px solid var(--anima-primary);">
+                <div class="anima-flex-row">
+                    <div class="anima-label-group">
+                        <span class="anima-label-text" style="font-size: 1.1em; font-weight: bold;">向量功能总开关</span>
+                        <span class="anima-desc-inline">开启后启用向量化、聊天检索与注入功能</span>
+                    </div>
+                    <label class="anima-switch">
+                        <input type="checkbox" id="rag_master_switch" ${settings.rag_enabled ? "checked" : ""}>
+                        <span class="anima-slider round"></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+    `;
+  const contentVisibilityClass = settings.rag_enabled ? "" : "hidden";
+
+  const mainContentHtml =
+    styleFix +
+    `
+        <div id="rag_main_content_wrapper" class="${contentVisibilityClass}">
+            
+            <div class="anima-setting-group">
+                <div style="display:flex; flex-wrap:wrap; gap: 8px; justify-content:space-between; align-items:center; margin-bottom: 10px;">
+                    <h2 class="anima-title" style="margin:0; white-space:nowrap;"><i class="fa-solid fa-database"></i> 数据库管理</h2>
+    
+                    <div style="display:flex; gap:5px; flex-wrap: wrap;">
+                         <button id="rag_btn_status" class="anima-btn secondary small" title="当前聊天向量状态" style="white-space:nowrap;">
+                             <i class="fa-solid fa-list-check"></i> 当前聊天向量
+                         </button>
+                         <button id="rag_btn_last_result" class="anima-btn secondary small" title="查看最近一次生成的检索详情" style="white-space:nowrap;">
+                             <i class="fa-solid fa-magnifying-glass-chart"></i> 查看最近检索
+                         </button>
+                    </div>
+                </div>
+
+                <div class="anima-card">
+                    <div class="anima-flex-row">
+                        <div class="anima-label-group">
+                            <span class="anima-label-text">已关联数据库</span>
+                        </div>
+                        <div style="display:flex; gap:5px;">
+                            <input type="file" id="rag_input_import_zip" accept=".zip" style="display:none;" />
+                        
+                            <button id="rag_btn_upload_zip" class="anima-btn secondary small" title="导入 .zip 数据库">
+                                <i class="fa-solid fa-file-import"></i> 导入
+                            </button>
+                            <button id="rag_btn_download_zip" class="anima-btn secondary small" title="导出当前聊天数据库">
+                                <i class="fa-solid fa-file-export"></i> 导出
+                            </button>
+                            <button id="rag_btn_import" class="anima-btn primary small" title="将已存在的数据库关联到当前聊天">
+                                <i class="fa-solid fa-bars-progress"></i> 管理
+                            </button>
+                        </div>
+                    </div>
+                    <div id="rag_file_list" style="margin-top: 10px;"></div>
+                    
+                    <div class="anima-divider"></div>
+
+                    <div class="anima-flex-row">
+                        <div class="anima-label-group">
+                            <span class="anima-label-text">自动向量化</span>
+                            <span class="anima-desc-inline">当聊天总结更新时自动同步</span>
+                        </div>
+                        <label class="anima-switch">
+                            <input type="checkbox" id="rag_auto_vectorize" ${settings.auto_vectorize ? "checked" : ""}>
+                            <span class="anima-slider round"></span>
+                        </label>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button id="rag_btn_save_settings_top" class="anima-btn primary" style="width:100%">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存配置
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="anima-rag-modal" class="anima-modal hidden">
+                 <div class="anima-modal-content">
+                    <div class="anima-modal-header">
+                        <h3 id="anima-rag-modal-title">标题</h3>
+                        <span class="anima-close-rag-modal" style="cursor:pointer; font-size:20px;">&times;</span>
+                    </div>
+                    <div id="anima-rag-modal-body" class="anima-modal-body"></div>
+                 </div>
+            </div>
+            ${getRegexModalHTML()}
+            
+           <div class="anima-setting-group">
+            <h2 class="anima-title"><i class="fa-solid fa-filter"></i>向量检索内容</h2>
+            <div class="anima-card">
+                <div class="anima-flex-row" style="align-items: flex-start;">
+                    <div class="anima-label-group">
+                        <span class="anima-label-text">正则清洗</span>
+                        <span class="anima-desc-inline">在向量化之前清洗文本</span>
+                    </div>
+                    <button id="rag_btn_open_regex_modal" class="anima-btn primary small">
+                        <i class="fa-solid fa-plus"></i> 添加规则
+                    </button>
+                </div>
+                <div id="rag_regex_list" class="anima-regex-list"></div>
+
+                <div class="anima-flex-row">
+                    <div class="anima-label-group">
+                        <span class="anima-label-text">正则处理跳过开场白</span>
+                        <span class="anima-desc-inline">开启后，第 0 层（开场白/设定）将保持原文，不被正则清洗。</span>
+                    </div>
+                    <label class="anima-switch">
+                        <input type="checkbox" id="rag_skip_layer_zero" ${settings.skip_layer_zero ? "checked" : ""}>
+                        <span class="anima-slider round"></span>
+                    </label>
+                </div>
+
+                <div class="anima-flex-row">
+                    <div class="anima-label-group">
+                        <span class="anima-label-text">正则处理跳过User消息</span>
+                        <span class="anima-desc-inline">开启后，User发送的内容将保留原文，不进行正则清洗</span>
+                    </div>
+                    <label class="anima-switch">
+                        <input type="checkbox" id="rag_regex_skip_user" ${settings.regex_skip_user ? "checked" : ""}>
+                        <span class="anima-slider round"></span>
+                    </label>
+                </div>
+                
+                <div class="anima-divider"></div>
+                
+                <div class="anima-prompt-container">
+                    <div class="anima-flex-row">
+                        <label class="anima-label-text">向量提示词构建</label>
+                        <div style="display:flex; gap:10px;">
+                             <button id="rag_btn_preview_query" class="anima-btn secondary small">
+                                <i class="fa-solid fa-eye"></i> 预览
+                            </button>
+                            <button id="rag_btn_add_prompt_item" class="anima-btn small primary"><i class="fa-solid fa-plus"></i> 添加</button>
+                        </div>
+                    </div>
+                    <div class="anima-desc-inline" style="margin-bottom:5px;">
+                        构建发送给 Embedding 模型的文本。必须包含 <b>楼层内容</b>。
+                    </div>
+                    <div id="rag_prompt_list" class="anima-regex-list" style="min-height: 80px; padding: 5px;"></div>
+                    
+                    <div style="margin-top: 10px;">
+                        <button id="rag_btn_save_prompt_bottom" class="anima-btn primary" style="width:100%">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存配置
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+            <div class="anima-setting-group">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 5px;">
+                    <h2 class="anima-title" style="margin:0;"><i class="fa-solid fa-sliders"></i> 检索策略</h2>
+                    <div style="display:flex; gap:5px;">
+                        <input type="file" id="rag_input_strategy_json" accept=".json" style="display:none;" />
+                        <button id="rag_strategy_import" class="anima-btn secondary small" title="导入策略配置">
+                            <i class="fa-solid fa-file-import"></i> 导入
+                        </button>
+                        <button id="rag_strategy_export" class="anima-btn secondary small" title="导出策略配置">
+                            <i class="fa-solid fa-file-export"></i> 导出
+                        </button>
+                    </div>
+                </div>
+
+                <div class="anima-card">
+                    <div class="anima-flex-row">
+                        <div class="anima-label-group">
+                            <span class="anima-label-text">基础结果数量</span>
+                            <span class="anima-desc-inline">最少检索切片数</span>
+                        </div>
+                        <div class="anima-input-wrapper">
+                            <input type="number" id="rag_base_count" class="anima-input" 
+                                   style="width:80px; text-align:center;"
+                                   value="${settings.base_count}" min="1">
+                        </div>
+                    </div>
+
+                    <div class="anima-flex-row">
+                        <div class="anima-label-group">
+                            <span class="anima-label-text">最低相关性</span>
+                            <span class="anima-desc-inline">低于此分数的切片将被丢弃</span>
+                        </div>
+                        <div class="anima-input-wrapper">
+                             <input type="number" id="rag_min_score" class="anima-input" 
+                                    style="width:80px; text-align:center;"
+                                    value="${settings.min_score || 0.2}" step="0.05" min="0" max="1">
+                        </div>
+                    </div>
+
+                    <div class="anima-flex-row">
+                        <div class="anima-label-group">
+                            <span class="anima-label-text">启用分布式检索策略</span>
+                            <span class="anima-desc-inline">开启后启用多级召回</span>
+                        </div>
+                        <label class="anima-switch">
+                            <input type="checkbox" id="rag_distributed_switch" ${settings.distributed_retrieval ? "checked" : ""}>
+                            <span class="anima-slider round"></span>
+                        </label>
+                    </div>
+
+                    <div id="rag_distributed_config" class="${settings.distributed_retrieval ? "" : "hidden"}" style="margin-top: 15px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 15px;">
+                        
+                        <div class="anima-flex-row">
+                            <div class="anima-label-group">
+                                <span class="anima-label-text">虚拟时间模式</span>
+                                <span class="anima-desc-inline">使用当前状态信息的事件计算节日/生理</span>
+                            </div>
+                            <label class="anima-switch">
+                                <input type="checkbox" id="rag_virtual_time_switch" ${settings.virtual_time_mode ? "checked" : ""}>
+                                <span class="anima-slider round"></span>
+                            </label>
+                        </div>
+
+                        <div class="anima-flex-row">
+                            <div class="anima-label-group">
+                                <span class="anima-label-text">候选倍率</span>
+                                <span class="anima-desc-inline">召回数量 = 需求数 x 倍率 (去重用)</span>
+                            </div>
+                            <div class="anima-input-wrapper">
+                                <input type="number" id="rag_multiplier" class="anima-input" 
+                                       style="width:60px; text-align:center;"
+                                       value="${settings.strategy_settings?.candidate_multiplier || 2}" min="1">
+                            </div>
+                        </div>
+
+                        <div id="rag_strategy_table_container" style="margin-top: 10px;"></div>
+                        
+                    </div>
+
+                    <div id="rag_simple_config" class="${settings.distributed_retrieval ? "hidden" : ""}">
+                        <div style="padding:10px; text-align:center; color:#666; font-size:12px; font-style:italic;">
+                            仅使用基础相关性检索 (Base Count)
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 15px;">
+                        <button id="rag_btn_save_settings_bottom" class="anima-btn primary" style="width:100%">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存配置
+                        </button>
+                    </div>
+                 </div>
+            </div>
+
+            <div class="anima-setting-group">
+                <h2 class="anima-title"><i class="fa-solid fa-wand-magic-sparkles"></i> 增强处理</h2>
+                <div class="anima-card">
+                    <div class="anima-flex-row" style="align-items: center; margin-bottom: 15px;">
+                        <div class="anima-label-group">
+                            <span class="anima-label-text">近因加权</span>
+                            <span class="anima-desc-inline">给予当前对话的数据库额外加分</span>
+                        </div>
+                        <div class="anima-input-wrapper" style="display: flex; align-items: center; height: 100%;">
+                            <input type="number" id="rag_recent_weight" class="anima-input" 
+                                   style="width:80px; text-align:center; margin:0;"
+                                   value="${settings.recent_weight !== undefined ? settings.recent_weight : 0.05}" step="0.01" min="0">
+                        </div>
+                    </div>
+                    <div class="anima-divider"></div>
+                    <div style="margin-bottom: 10px; padding-bottom: 10px;">
+                        <div style="font-size:16px; font-weight:bold; color: #a020dc; margin-bottom:15px; display:flex; align-items:center;">
+                            <i class="fa-solid fa-bullhorn" style="margin-right:8px;"></i> 记忆回响
+                        </div>
+
+                        <div class="anima-flex-row">
+                            <div class="anima-label-group">
+                                <span class="anima-label-text">基础粘性</span>
+                                <span class="anima-desc-inline">普通检索结果的停留回合数</span>
+                            </div>
+                            <div class="anima-input-wrapper">
+                                <input type="number" id="rag_echo_base_life" class="anima-input" 
+                                    style="width:80px; text-align:center;"
+                                    value="${settings.base_life ?? 1}" min="0">
+                            </div>
+                        </div>
+
+                        <div class="anima-flex-row">
+                            <div class="anima-label-group">
+                                <span class="anima-label-text">重要粘性</span>
+                                <span class="anima-desc-inline">重要/特殊策略结果的停留回合数</span>
+                            </div>
+                            <div class="anima-input-wrapper">
+                                <input type="number" id="rag_echo_imp_life" class="anima-input" 
+                                    style="width:80px; text-align:center;"
+                                    value="${settings.imp_life ?? 2}" min="0">
+                            </div>
+                        </div>
+
+                        <div class="anima-flex-row">
+                            <div class="anima-label-group">
+                                <span class="anima-label-text">最大总量</span>
+                                <span class="anima-desc-inline">回响池中同时存在的最大切片数</span>
+                            </div>
+                            <div class="anima-input-wrapper">
+                                <input type="number" id="rag_echo_max_count" class="anima-input" 
+                                    style="width:80px; text-align:center;"
+                                    value="${settings.echo_max_count ?? 10}" min="0">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="anima-divider"></div>
+                    <div>
+                        <div style="font-size:16px; font-weight:bold; color: #eab308; margin-bottom:15px; display:flex; align-items:center;">
+                            <i class="fa-solid fa-scale-balanced" style="margin-right:8px;"></i> 结果重排
+                        </div>
+                        
+                        <div class="anima-flex-row">
+                            <div class="anima-label-group">
+                                <span class="anima-label-text">启用重排功能</span>
+                                <span class="anima-desc-inline">需配置好重排模型的API</span>
+                            </div>
+                            <label class="anima-switch">
+                                <input type="checkbox" id="rag_rerank_switch" ${settings.rerank_enabled ? "checked" : ""}>
+                                <span class="anima-slider round"></span>
+                            </label>
+                        </div>
+
+                        <div id="rag_rerank_config" class="${settings.rerank_enabled ? "" : "hidden"}" style="margin-top: 10px;">
+                            <div class="anima-flex-row">
+                                <div class="anima-label-group">
+                                    <span class="anima-label-text">待重排数量</span>
+                                    <span class="anima-desc-inline">发给重排模型的基础/重要检索步骤的切片总数</span>
+                                </div>
+                                <div class="anima-input-wrapper">
+                                    <input type="number" id="rag_rerank_count" class="anima-input" 
+                                           style="width:80px; text-align:center;"
+                                           value="${settings.rerank_count ?? 30}" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 15px;">
+                        <button id="rag_btn_save_enhance" class="anima-btn primary" style="width:100%">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存配置
+                        </button>
+                    </div>
+
+                </div>
+            </div>
+
+            <div class="anima-setting-group">
+                <h2 class="anima-title"><i class="fa-solid fa-syringe"></i> 结果注入配置</h2>
+                <div class="anima-card">
+                    
+                    <div style="margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 20px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 12px;">
+                            <div class="anima-compact-input">
+                                <div class="anima-label-text">触发策略</div>
+                                <select id="rag_inject_strategy" class="anima-select rag-inject-control">
+                                    <option value="constant" ${settings.injection_settings?.strategy === "constant" ? "selected" : ""}>🔵 常驻 (Constant)</option>
+                                    <option value="selective" ${settings.injection_settings?.strategy === "selective" ? "selected" : ""}>🟢 按需 (Selective)</option>
+                                </select>
+                            </div>
+                            <div class="anima-compact-input">
+                                <div class="anima-label-text">插入位置</div>
+                                <select id="rag_inject_position" class="anima-select rag-inject-control">
+                                    <option value="at_depth" ${settings.injection_settings?.position === "at_depth" ? "selected" : ""}>@D (指定深度)</option>
+                                    <option value="before_character_definition" ${settings.injection_settings?.position === "before_character_definition" ? "selected" : ""}>⬆️ 角色定义之前</option>
+                                    <option value="after_character_definition" ${settings.injection_settings?.position === "after_character_definition" ? "selected" : ""}>⬇️ 角色定义之后</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                            <div class="anima-compact-input">
+                                <div class="anima-label-text">角色归属</div>
+                                <select id="rag_inject_role" class="anima-select rag-inject-control">
+                                    <option value="system" ${settings.injection_settings?.role === "system" ? "selected" : ""}>System</option>
+                                    <option value="user" ${settings.injection_settings?.role === "user" ? "selected" : ""}>User</option>
+                                    <option value="assistant" ${settings.injection_settings?.role === "assistant" ? "selected" : ""}>Assistant</option>
+                                </select>
+                            </div>
+                            <div class="anima-compact-input" id="rag_inject_depth_wrapper">
+                                <div class="anima-label-text">深度</div>
+                                <input type="number" id="rag_inject_depth" class="anima-input rag-inject-control" 
+                                    value="${settings.injection_settings?.depth ?? 2}" step="1" min="0" placeholder="0">
+                            </div>
+                            <div class="anima-compact-input">
+                                <div class="anima-label-text">顺序</div>
+                                <input type="number" id="rag_inject_order" class="anima-input rag-inject-control" 
+                                    value="${settings.injection_settings?.order ?? 100}" step="1">
+                            </div>
+                        </div>
+
+                        <div class="anima-flex-row" style="margin-bottom: 10px;">
+                            <div class="anima-label-group">
+                                <span class="anima-label-text">强制插入最新N个总结片段</span>
+                                <span class="anima-desc-inline">
+                                    在模板中使用 <code>{{recent_history}}</code> 插入。
+                                </span>
+                            </div>
+                            <div class="anima-input-wrapper">
+                                 <input type="number" id="rag_inject_recent_count" class="anima-input" 
+                                        style="width: 60px; text-align:center;"
+                                 value="${settings.injection_settings?.recent_count ?? 2}" min="0" max="10">
+                                 <span style="font-size:12px; color:#aaa; margin-left:5px;">条</span>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom: 5px;">
+                            <div class="anima-label-group" style="margin-bottom: 5px;">
+                                <span class="anima-label-text">提示词构建模板</span>
+                                <span class="anima-desc-inline">使用 <code>{{chatHistory}}</code>（推荐） 或者 <code>{{rag}}</code> 作为占位符。</span>
+                            </div>
+                            <textarea id="rag_inject_template" class="anima-textarea" rows="4" 
+                                placeholder="例如：以下是相关记忆...\n{{chatHistory}}">${escapeHtml(settings.injection_settings?.template || "以下是相关的记忆内容：\n{{chatHistory}}")}</textarea>
+                        </div>
+                    </div>
+
+                    <div>
+                        <button id="rag_btn_save_injection" class="anima-btn primary" style="width:100%; height: 40px; font-weight:bold;">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存所有注入配置
+                        </button>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+        `;
+  container.innerHTML = styleFix + masterSwitchHtml + mainContentHtml;
+  // 渲染各个子模块
+  regexComponent = new RegexListComponent(
+    "rag_regex_list", // 容器 ID (保持 rag.js 原有的 div id="rag_regex_list")
+    () => settings.regex_strings, // 获取数据
+    (newData) => {
+      // 保存回调
+      settings.regex_strings = newData;
+    },
+  );
+  regexComponent.render();
+  renderPromptList(settings.vector_prompt);
+  renderStrategyTable(settings);
+  renderFileList(safeRagFiles, currentChatId);
+  $("#rag_master_switch").on("change", async function () {
+    const isEnabled = $(this).prop("checked");
+
+    // A. 更新设置
+    settings.rag_enabled = isEnabled;
+    saveRagSettings(settings);
+
+    // 🔥🔥 B. [新增] 触发世界书条目状态联动 🔥🔥
+    // RAG 开启 -> 禁用所有 Summary 条目
+    // RAG 关闭 -> 启用所有 Summary 条目
+    await toggleAllSummariesState(isEnabled);
+
+    // C. 控制 UI 显隐
+    if (isEnabled) {
+      $("#rag_main_content_wrapper").removeClass("hidden");
+      toastr.success("向量功能已开启");
+
+      // D. 自动检查脏数据
+      if (settings.auto_vectorize) {
+        // 假设 checkAndSyncDirtyVectors 已经在该文件其他地方定义或引入
+        if (typeof checkAndSyncDirtyVectors === "function") {
+          checkAndSyncDirtyVectors();
+        }
+      }
+    } else {
+      $("#rag_main_content_wrapper").addClass("hidden");
+      toastr.info("向量功能已关闭 (已回退至纯文本模式)"); // 提示语也可以稍微改一下
+    }
+  });
+  bindRagEvents(settings);
+}
+
+// ==========================================
+// 5. 弹窗与事件系统
+// ==========================================
+
+export function showRagModal(title, html) {
+  $("#anima-rag-modal-title").text(title);
+  $("#anima-rag-modal-body").html(html);
+  $("#anima-rag-modal").removeClass("hidden");
+}
+
+function bindRagEvents(settings) {
+  const $container = $("#tab-rag");
+
+  // 1. 注入位置联动
+  $("#rag_inject_position")
+    .off("change")
+    .on("change", function () {
+      const val = $(this).val();
+      const $depthInput = $("#rag_inject_depth");
+      const $depthRow = $("#rag_inject_depth_row");
+
+      if (val === "at_depth") {
+        $depthInput.prop("disabled", false).css("opacity", 1);
+        $depthRow.css("opacity", 1);
+      } else {
+        $depthInput.prop("disabled", true).css("opacity", 0.5);
+        $depthRow.css("opacity", 0.5);
+      }
+    });
+
+  // 关闭 RAG 主弹窗
+  $(".anima-close-rag-modal").on("click", () =>
+    $("#anima-rag-modal").addClass("hidden"),
+  );
+
+  // 关闭 Regex 弹窗
+  $container.find(".anima-close-regex-modal").on("click", () => {
+    $container.find("#anima-regex-input-modal").addClass("hidden");
+  });
+
+  // --- 正则事件 ---
+  $("#rag_btn_open_regex_modal").on("click", () => {
+    // 使用 $container.find 确保清空的是当前页面的输入框
+    $container.find("#anima_new_regex_str").val("");
+    $container.find("#anima_new_regex_type").val("extract");
+    $container.find("#anima-regex-input-modal").removeClass("hidden");
+  });
+
+  $container.find("#anima_btn_confirm_add_regex").on("click", () => {
+    const str = $container.find("#anima_new_regex_str").val().trim();
+    const type = $container.find("#anima_new_regex_type").val();
+
+    if (!str) return toastr.warning("正则不能为空");
+
+    // 使用组件添加
+    if (regexComponent) {
+      regexComponent.addRule(str, type);
+    }
+
+    $container.find("#anima-regex-input-modal").addClass("hidden");
+  });
+
+  // --- 提示词事件 ---
+  $("#rag_btn_add_prompt_item").on("click", () => {
+    // 🟢 修改：添加时显式指定 type: "text"，防止预览时被忽略
+    settings.vector_prompt.unshift({
+      type: "text",
+      role: "system",
+      title: "新规则",
+      content: "",
+    });
+    renderPromptList(settings.vector_prompt);
+  });
+
+  // --- 分布式开关 ---
+  $("#rag_distributed_switch").on("change", function () {
+    const isChecked = $(this).prop("checked");
+    if (isChecked) {
+      $("#rag_simple_config").addClass("hidden");
+      $("#rag_distributed_config").removeClass("hidden");
+    } else {
+      $("#rag_simple_config").removeClass("hidden");
+      $("#rag_distributed_config").addClass("hidden");
+    }
+  });
+
+  // --- 重排开关联动 ---
+  $("#rag_rerank_switch").on("change", function () {
+    const isChecked = $(this).prop("checked");
+    if (isChecked) {
+      $("#rag_rerank_config").removeClass("hidden");
+    } else {
+      $("#rag_rerank_config").addClass("hidden");
+    }
+  });
+
+  // --- 标签编辑 ---
+  $("#btn_edit_tags").on("click", () => {
+    $("#rag_tags_action_btns").hide();
+    $("#rag_tags_edit_btns").css("display", "flex");
+    renderTagTable(settings.tags_config, true);
+  });
+  $("#btn_cancel_tags").on("click", () => {
+    $("#rag_tags_edit_btns").hide();
+    $("#rag_tags_action_btns").show();
+    renderTagTable(settings.tags_config, false);
+  });
+  $("#btn_save_tags").on("click", () => {
+    $(".tag-labels-input").each(function () {
+      const key = $(this).data("key");
+      const arr = $(this)
+        .val()
+        .split(/[,，]/)
+        .map((s) => s.trim())
+        .filter((s) => s);
+      settings.tags_config[key].labels = arr;
+    });
+    $(".tag-count-input").each(function () {
+      const key = $(this).data("key");
+      settings.tags_config[key].count = parseInt($(this).val()) || 0;
+    });
+    $("#rag_tags_edit_btns").hide();
+    $("#rag_tags_action_btns").show();
+    renderTagTable(settings.tags_config, false);
+  });
+
+  // --- 节日配置 ---
+  $("#rag_btn_holidays").on("click", () => {
+    renderHolidayModal(settings);
+  });
+
+  const handleSave = async () => {
+    // 🟢 必须是 async
+    try {
+      const currentSettings = getRagSettings();
+
+      // 1. 获取 DOM 数据
+      const impTagsArr = (
+        $("#rag_row_important").find(".tag-input").val() || ""
+      )
+        .split(/[,，]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      // 2. 组装新对象 (遵循你的分类要求)
+      const newSettings = {
+        ...currentSettings,
+
+        // 全局项
+        base_count: parseInt($("#rag_base_count").val()) || 2,
+        min_score: parseFloat($("#rag_min_score").val()) || 0.2,
+        recent_weight: parseFloat($("#rag_recent_weight").val()) || 0,
+        base_life: parseInt($("#rag_echo_base_life").val()) || 1,
+        imp_life: parseInt($("#rag_echo_imp_life").val()) || 2,
+        echo_max_count: parseInt($("#rag_echo_max_count").val()) || 10,
+
+        rerank_enabled: $("#rag_rerank_switch").prop("checked"),
+        rerank_count: parseInt($("#rag_rerank_count").val()) || 30,
+
+        auto_vectorize: $("#rag_auto_vectorize").prop("checked"),
+        skip_layer_zero: $("#rag_skip_layer_zero").prop("checked"), // 跳过开场白
+        regex_skip_user: $("#rag_regex_skip_user").prop("checked"),
+        // 角色项
+        distributed_retrieval: $("#rag_distributed_switch").prop("checked"),
+        virtual_time_mode: $("#rag_virtual_time_switch").prop("checked"),
+
+        strategy_settings: {
+          candidate_multiplier: parseInt($("#rag_multiplier").val()) || 2, // 存全局
+          important: {
+            labels: impTagsArr,
+            count: parseInt($("#rag_strat_imp_count").val()) || 1,
+          },
+          period: {
+            labels: currentSettings.strategy_settings?.period?.labels || [
+              "Period",
+            ],
+            count: parseInt($("#rag_strat_period_count").val()) || 1,
+          },
+          status: {
+            labels: currentSettings.strategy_settings?.status?.labels || [],
+            count: parseInt($("#rag_strat_status_count").val()) || 1,
+            rules: currentSettings.strategy_settings?.status?.rules || [],
+          },
+          special: {
+            count: parseInt($("#rag_strat_holiday_count").val()) || 1,
+          },
+          diversity: {
+            count: parseInt($("#rag_strat_div_count").val()) || 2,
+          },
+        },
+      };
+
+      // 3. 执行异步分流保存
+      await saveRagSettings(newSettings);
+
+      // 4. 反馈与刷新
+      toastr.success("设置已成功分流保存至全局与角色卡");
+      renderStrategyTable(newSettings);
+    } catch (err) {
+      console.error("[Anima RAG] Save Error:", err);
+      toastr.error("保存失败: " + err.message);
+    }
+  };
+
+  // 🔥🔥🔥 修改绑定：同时绑定顶部和底部的保存按钮 🔥🔥🔥
+  // 使用逗号分隔选择器，或者分别绑定
+  const allSaveButtons = [
+    "#rag_btn_save_settings_top",
+    "#rag_btn_save_settings_bottom",
+    "#rag_btn_save_simple",
+    "#rag_btn_save_dist",
+    "#rag_btn_save_prompt_cfg",
+    "#rag_btn_save_prompt_bottom",
+    "#rag_btn_save_enhance",
+  ].join(", ");
+
+  // 使用 off() 先解绑，再绑定，防止重复
+  $(allSaveButtons).off("click").on("click", handleSave);
+
+  $("#rag_btn_save_injection")
+    .off("click")
+    // 🟢 修改 1: 在这里加上 async
+    .on("click", async () => {
+      // 1. 获取 Chat Memory 注入配置 (原有)
+      const newInjectionSettings = {
+        strategy: $("#rag_inject_strategy").val(),
+        position: $("#rag_inject_position").val(),
+        role: $("#rag_inject_role").val(),
+        depth: parseInt($("#rag_inject_depth").val()) || 0,
+        order: parseInt($("#rag_inject_order").val()) || 100,
+        recent_count: (() => {
+          const value = parseInt($("#rag_inject_recent_count").val(), 10);
+          return Number.isNaN(value) ? 2 : value;
+        })(),
+        template: $("#rag_inject_template").val(),
+      };
+
+      // 3. 更新内存对象
+      settings.injection_settings = newInjectionSettings;
+
+      // 4. 持久化
+      saveRagSettings(settings);
+
+      // 🟢 修改 2: 加上 await，确保同步完成后再提示
+      await syncRagSettingsToWorldbook();
+
+      if (window.toastr) toastr.success("注入配置已保存并应用！");
+    });
+
+  $("#rag_btn_preview_query").on("click", async () => {
+    // 获取当前上下文
+    const context = SillyTavern.getContext();
+    const chat = context.chat;
+
+    if (!chat || chat.length === 0) {
+      toastr.warning("当前没有聊天记录，无法预览");
+      return;
+    }
+
+    // 临时构建 Settings 对象
+    const currentSettings = {
+      ...settings,
+      skip_layer_zero: $("#rag_skip_layer_zero").prop("checked"),
+      regex_skip_user: $("#rag_regex_skip_user").prop("checked"),
+      regex_strings: settings.regex_strings,
+      vector_prompt: settings.vector_prompt,
+    };
+
+    // 1. 获取结构化数据
+    const blocks = await constructRagQueryMock(chat, currentSettings);
+
+    // 2. 辅助渲染函数 (完全复刻 Summary 样式)
+    const createBlock = (title, contentHtml, color, borderColor, bgColor) => {
+      return `
+            <div class="anima-preview-block" style="border-color: ${borderColor};">
+                <div class="block-header" style="background: ${bgColor}; color: ${color};">
+                    <span>${title}</span>
+                    <i class="fa-solid fa-chevron-down arrow-icon"></i>
+                </div>
+                <div class="block-content" style="display: none;">${contentHtml}</div>
+            </div>`;
+    };
+
+    let finalPreviewHtml = "";
+    let totalChars = 0;
+
+    // 3. 遍历构建 HTML
+    blocks.forEach((block) => {
+      if (block.type === "text") {
+        totalChars += block.content.length;
+        finalPreviewHtml += createBlock(
+          block.title,
+          `<div style="white-space: pre-wrap; color: #ccc;">${escapeHtml(block.content)}</div>`,
+          "#aaa",
+          "#444",
+          "rgba(0,0,0,0.3)",
+        );
+      } else if (block.type === "context") {
+        let contextHtml = "";
+        if (block.messages.length === 0) {
+          contextHtml = `<div style='padding:5px; color:#aaa; font-style:italic;'>⚠️ 此范围内没有有效消息 (可能被过滤或正则清洗为空)</div>`;
+        } else {
+          contextHtml = block.messages
+            .map((m) => {
+              totalChars += m.content.length;
+              // 复刻 Summary 的颜色逻辑
+              const colorClass =
+                m.role === "user" ? "color:#4ade80" : "color:#60a5fa"; // 绿/蓝
+              const roleLabel = m.role.toUpperCase();
+              const skipBadge = m.skippedRegex
+                ? `<span style="font-size:10px; background:rgba(255,255,255,0.1); border-radius:3px; padding:0 3px; margin-left:5px; color:#aaa;" title="正则已跳过">RAW</span>`
+                : "";
+
+              return (
+                `<div style="margin-bottom: 8px; border-left: 2px solid rgba(255,255,255,0.1); padding-left: 6px;">` +
+                `<div style="font-weight:bold; font-size: 11px; margin-bottom: 2px; line-height: 1; ${colorClass}">[${roleLabel}]${skipBadge}</div>` +
+                `<div style="white-space: pre-wrap; color: #ccc; line-height: 1.4; font-size: 12px; margin: 0;">${escapeHtml(m.content).trim()}</div>` +
+                `</div>`
+              );
+            })
+            .join("");
+        }
+
+        finalPreviewHtml += createBlock(
+          block.title,
+          contextHtml,
+          "#93c5fd", // 标题文字颜色
+          "#64748b", // 边框颜色
+          "rgba(100, 149, 237, 0.2)", // 标题背景颜色
+        );
+      }
+    });
+
+    // 4. 定义 CSS (复刻 Summary)
+    const style = `<style>
+            .anima-preview-block { border: 1px solid #444; border-radius: 6px; margin-bottom: 10px; overflow: hidden; background: rgba(0,0,0,0.1); } 
+            .block-header { padding: 8px 10px; font-size: 12px; font-weight: bold; cursor: pointer; display: flex; justify-content: space-between; align-items: center; } 
+            .block-header:hover { filter: brightness(1.2); } 
+            .block-content { padding: 10px; font-size: 12px; border-top: 1px solid rgba(0,0,0,0.2); background: rgba(0,0,0,0.2); } 
+            .anima-preview-block.expanded .arrow-icon { transform: rotate(180deg); }
+        </style>`;
+
+    // 5. 元数据头部
+    const metaInfo = `
+            <div style="margin-bottom: 10px; color: #aaa; font-size: 12px; border-bottom:1px solid #444; padding-bottom:10px;">
+                <div style="display:flex; justify-content:space-between;">
+                    <span><strong>Source:</strong> Current Chat</span>
+                    <span><strong>Total Chars:</strong> ~${totalChars}</span>
+                </div>
+            </div>
+        `;
+
+    // 6. 显示弹窗
+    showRagModal(
+      "向量提示词预览 (Preview)",
+      style +
+        metaInfo +
+        `<div id="rag-preview-container">${finalPreviewHtml}</div>`,
+    );
+
+    // 7. 绑定折叠逻辑
+    setTimeout(() => {
+      $("#rag-preview-container")
+        .off("click")
+        .on("click", ".block-header", function () {
+          const $block = $(this).closest(".anima-preview-block");
+          const $content = $block.find(".block-content");
+          if ($content.is(":visible")) {
+            $content.slideUp(150);
+            $block.removeClass("expanded");
+          } else {
+            $content.slideDown(150);
+            $block.addClass("expanded");
+          }
+        });
+    }, 100);
+  });
+
+  // --- 状态弹窗 ---
+  $("#rag_btn_status").on("click", async () => {
+    // 1. 预检查：先判断是否有打开的聊天
+    const context = SillyTavern.getContext();
+    if (!context.chatId) {
+      toastr.warning("请先打开一个聊天窗口");
+      return;
+    }
+
+    // 2. 安全调用：捕获可能的其他异步错误
+    try {
+      await showVectorStatusModal();
+    } catch (err) {
+      console.error("[Anima RAG] Status Error:", err);
+      // 提取错误信息提示给用户
+      toastr.error("获取状态失败: " + (err.message || "未知错误"));
+    }
+  });
+
+  $("#rag_btn_last_result").on("click", () => {
+    $("#rag_btn_last_result").removeClass("glow-effect"); // 修复原代码中的 $(this) 问题
+
+    if (!_lastRetrievalResult) {
+      toastr.info("暂无检索记录 (请先进行一次对话)");
+      return;
+    }
+
+    const r = _lastRetrievalResult;
+
+    // 🟢 核心修改：适配后端新字段，只取聊天向量结果
+    const vectorChatResults = r.vector_chat_results || [];
+    const debugLogs = r._debug_logs || [];
+
+    const queryText = r.query || "";
+    const queryLen = queryText.length;
+    // 累加聊天向量结果的 text 长度
+    const totalResultLen = vectorChatResults.reduce(
+      (acc, item) => acc + (item.text || "").length,
+      0,
+    );
+    const headerStyle = "font-size:12px; color:#aaa; font-weight:bold;";
+
+    // --- 1. 构建主结果区域 ---
+    let contentHtml = `
+            <div style="margin-bottom:10px; padding:10px; background:rgba(0,0,0,0.2); border-radius:4px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+                    <div style="${headerStyle}">Query (检索词)</div>
+                    <div style="${headerStyle}; font-family:monospace;">Length: ${queryLen} 字符数</div>
+                </div>
+                <div style="color:#eee; font-size:13px; white-space: pre-wrap;">${escapeHtml(queryText)}</div>
+            </div>
+            
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+                <div style="${headerStyle}">聊天向量切片 (${vectorChatResults.length})</div>
+                <div style="${headerStyle}; font-family:monospace;">总字数：${totalResultLen}</div>
+            </div>
+        `;
+
+    if (vectorChatResults.length > 0) {
+      contentHtml += vectorChatResults
+        .map((item, idx) => {
+          const displayId =
+            item.uniqueID ||
+            item.index ||
+            (item.chunk_index !== undefined
+              ? `Chunk_${item.chunk_index}`
+              : "N/A");
+          const sourceDb = item.source || "Unknown";
+          const isEcho = item.is_echo === true;
+          const isReranked = item.rerank_score !== undefined;
+
+          // 样式区分：回响 / 重排 / 普通
+          let theme = {};
+          if (isEcho) {
+            theme = {
+              borderColor: "#a855f7",
+              headerBg: "rgba(168, 85, 247, 0.15)",
+              countColor: "#d8b4fe",
+              icon: "fa-bullhorn",
+            };
+          } else if (isReranked) {
+            theme = {
+              borderColor: "#14b8a6", // Teal-500
+              headerBg: "rgba(20, 184, 166, 0.15)",
+              countColor: "#5eead4",
+              icon: "fa-scale-balanced",
+            };
+          } else {
+            theme = {
+              borderColor: "#3b82f6", // 蓝色主题（代表普通向量检索）
+              headerBg: "rgba(59, 130, 246, 0.15)",
+              countColor: "#60a5fa",
+              icon: "fa-database",
+            };
+          }
+
+          let displayScore = `Score: ${typeof item.score === "number" ? item.score.toFixed(4) : item.score}`;
+          if (isReranked) {
+            displayScore = `Rerank: ${item.rerank_score.toFixed(4)} (粗排: ${item.score.toFixed(4)})`;
+          }
+
+          return `
+        <div class="anima-preview-block" style="border:1px solid ${theme.borderColor}; margin-bottom:8px; border-radius:4px; overflow:hidden;">
+            <div class="block-header" style="background:${theme.headerBg}; padding:6px 10px; font-size:12px; display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <span style="color:${theme.countColor}; font-weight:bold;">#${idx + 1}</span>
+                    <span style="color:#fff; font-weight:bold; margin:0 6px; font-family:monospace;">[${escapeHtml(displayId)}]</span>
+                    <span style="color:${theme.countColor};">${escapeHtml(displayScore)}</span>
+                </div>
+                <span style="color:#aaa; font-size:11px;" title="来源数据库">
+                    <i class="fa-solid ${theme.icon}" style="margin-right:4px;"></i>${escapeHtml(sourceDb)}
+                </span>
+            </div>
+            <div class="block-content" style="padding:10px; font-size:12px; color:#ccc; background:rgba(0,0,0,0.2); white-space:pre-wrap; max-height:150px; overflow-y:auto;">${escapeHtml(item.text)}</div>
+        </div>
+    `;
+        })
+        .join("");
+    } else {
+      contentHtml += `<div style="padding:20px; text-align:center; color:#666;">本次未命中任何聊天向量切片</div>`;
+    }
+
+    // --- 2. 构建策略追踪日志 ---
+    if (debugLogs && debugLogs.length > 0) {
+      const renderLogCard = (logItem) => {
+        let data = logItem;
+        if (typeof logItem === "string") {
+          try {
+            data = JSON.parse(logItem);
+          } catch (e) {
+            data = null;
+          }
+        }
+
+        if (!data || !data.step) {
+          return `<div style="padding:4px 0; color:#888; border-bottom:1px dashed #444; font-family:monospace;">> ${escapeHtml(logItem)}</div>`;
+        }
+
+        let stepColor = "#666";
+        const stepName = data.step.toUpperCase();
+        if (stepName.includes("BASE")) stepColor = "#3b82f6";
+        else if (stepName.includes("IMPORTANT")) stepColor = "#eab308";
+        else if (stepName.includes("STATUS")) stepColor = "#ef4444";
+        else if (stepName.includes("ECHO")) stepColor = "#d946ef";
+        else if (stepName.includes("HOLIDAY") || stepName.includes("SPECIAL"))
+          stepColor = "#a855f7";
+        else if (stepName.includes("PERIOD")) stepColor = "#48ecd1";
+        else if (stepName.includes("DIVERSITY")) stepColor = "#59e451";
+
+        const libraryName = data.library || "Unknown DB";
+        const isEcho = stepName.includes("ECHO");
+        const tagsStyle = isEcho
+          ? "color: #888; white-space: normal; word-break: break-word; line-height: 1.3;"
+          : "color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;";
+
+        return `
+            <div class="anima-log-card" style="
+                background: rgba(0,0,0,0.3); 
+                border: 1px solid rgba(255,255,255,0.08); 
+                border-left: 3px solid ${stepColor}; 
+                border-radius: 4px; 
+                margin-bottom: 6px; 
+                padding: 6px 10px;
+                font-size: 11px;
+            ">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                    <div style="font-weight: bold; color: ${stepColor}; font-size: 12px;"> ${escapeHtml(data.step)}</div>
+                    <div style="text-align: right;">
+                        <div style="color: #eee; font-family: monospace; font-weight: bold; font-size: 11px;">
+                            ${typeof data.score === "number" ? data.score.toFixed(4) : escapeHtml(String(data.score))}
+                        </div>
+                    </div>
+                </div>
+
+                <div style="color: #aaa; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display:flex; align-items:center;" title="${escapeHtml(libraryName)}">
+                    <i class="fa-solid fa-database" style="font-size:10px; margin-right:4px; color:#666;"></i>${escapeHtml(libraryName)}
+                </div>
+
+                <div style="${tagsStyle}">
+                    <span style="color:#555; font-weight:bold;">ID:</span> <span style="color:#ccc; margin-right:8px;">${data.uniqueID}</span>
+                    <span style="color:#555; font-weight:bold;">Log:</span> ${escapeHtml(data.tags || "-")}
+                </div>
+            </div>`;
+      };
+
+      contentHtml += `
+            <div style="margin-top:15px;">
+                <details style="cursor: pointer;">
+                    <summary style="font-size:14px; color:#ddd; font-weight:bold; outline:none; list-style:none; display:flex; align-items:center;">
+                        <i class="fa-solid fa-caret-right" style="margin-right:8px; transition: transform 0.2s;"></i>
+                        🔎 策略执行追踪
+                        <span style="margin-left:auto; font-size:12px; color:#666; font-weight:normal;">${debugLogs.length} 条</span>
+                    </summary>
+                    
+                    <div style="margin-top: 10px; padding-right: 5px;" class="anima-scroll">
+                        ${debugLogs.map((item) => renderLogCard(item)).join("")}
+                    </div>
+                </details>
+                <style>
+                    details[open] summary i.fa-caret-right { transform: rotate(90deg); }
+                </style>
+            </div>`;
+    }
+
+    showRagModal(
+      "聊天向量检索分析",
+      `<div style="padding:10px;">${contentHtml}</div>`,
+    );
+  });
+
+  async function openDatabaseSelector(options) {
+    const {
+      title, // 弹窗标题
+      confirmText, // 确认按钮文字
+      multiSelect, // (保留扩展) 默认 true
+      filterOrphans, // 是否过滤掉不存在的库 (导出时需要过滤)
+      excludeKB,
+      onConfirm, // 确认回调 (selectedIds) => {}
+    } = options;
+
+    // 1. 获取后端真实存在的库
+    let allCollections = [];
+    try {
+      allCollections = await getAvailableCollections();
+
+      // 🟢 核心修复：如果在配置中指定了排除知识库，则提前过滤掉 kb_ 开头的库
+      if (excludeKB) {
+        allCollections = allCollections.filter((db) => !db.startsWith("kb_"));
+      }
+    } catch (e) {
+      toastr.error("无法获取服务器数据库列表");
+      return;
+    }
+
+    // 2. 获取当前关联状态 (用于高亮 Current)
+    const context = SillyTavern.getContext();
+    // const smartCurrentId = getSmartCollectionId();
+    const currentChatFiles = getChatRagFiles() || [];
+    const currentChatId = context ? context.chatId : null;
+
+    // 归一化处理 (仅用于 Linked 判定，Current 判定改用新逻辑)
+    // A. 定义归一化 (保持和 rag_ui_components.js 一致)
+    const normalizeId = (id) => (id || "").toString().replace(/_/g, " ").trim();
+
+    // B. 定义 isSelf 判断函数 (完全复刻 rag_ui_components.js 的逻辑)
+    const isSelf = (dbId) => {
+      if (!dbId) return false;
+
+      // 直接调用你的智能 ID 算法，获取当前聊天绝对正确的数据库名
+      const expectedDbName = getSmartCollectionId();
+
+      // 精准匹配
+      return dbId === expectedDbName;
+    };
+
+    const allLinkedSet = new Set([...currentChatFiles.map(normalizeId)]);
+
+    const normCurrentFilesSet = new Set([...currentChatFiles.map(normalizeId)]);
+
+    // 3. 构建列表 HTML
+    const listItems = allCollections.map((backendName) => {
+      const normBackendName = normalizeId(backendName);
+
+      // 判断是否在当前聊天中已关联
+      const isLinked = allLinkedSet.has(normBackendName);
+
+      // ✨ [修改点] 判断是否是当前 ChatID 对应的库 (支持带前缀的中文名)
+      const isCurrentChat = isSelf(backendName);
+
+      // 标记处理：如果是“关联”模式，已关联的默认勾选；如果是“导出”模式，默认不勾选（或者只勾选当前）
+      // 这里我们采用灵活策略：外部不传 defaultSelected，让用户自己选，但我们可以高亮
+      let isChecked = false;
+
+      // 💡 特殊逻辑：如果是关联模式(title里包含关联)，则回显已关联的；如果是导出，默认勾选当前同名的
+      if (title.includes("关联") || title.includes("Import")) {
+        isChecked = isLinked;
+      } else if (title.includes("导出") || title.includes("Export")) {
+        isChecked = isCurrentChat;
+      }
+
+      // 徽章
+      let badges = "";
+      if (isCurrentChat)
+        badges += `<span style="font-size:10px; background:rgba(74, 222, 128, 0.2); color:#4ade80; padding:1px 4px; border-radius:3px; margin-left:5px;">Current</span>`;
+      if (isLinked)
+        badges += `<span style="font-size:10px; background:rgba(96, 165, 250, 0.2); color:#60a5fa; padding:1px 4px; border-radius:3px; margin-left:5px;">Linked</span>`;
+
+      // 如果是关联模式，我们从 set 里删掉它，方便最后找孤儿
+      if (normCurrentFilesSet.has(normBackendName)) {
+        normCurrentFilesSet.delete(normBackendName);
+      }
+
+      const showDelete = !title.includes("Export") && !title.includes("导出");
+      return `
+    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.05); padding-right:5px; min-width: 100%; width: max-content;">
+        <label class="anima-checkbox-item" style="flex:1 0 auto; display:flex; justify-content:space-between; align-items:center; padding:8px; cursor:pointer; border-bottom:none; margin:0;">
+            <div style="display:flex; align-items:center;">
+                <i class="fa-solid fa-database" style="color:${isCurrentChat ? "var(--anima-primary)" : "#aaa"}; margin-right:8px; flex-shrink:0;"></i>
+                <span style="white-space:nowrap; color:#ddd;" title="${escapeHtml(backendName)}">
+                    ${escapeHtml(backendName)}
+                </span>
+                ${badges}
+            </div>
+            <input type="checkbox" class="anima-checkbox collection-checkbox" value="${escapeHtml(backendName)}" ${isChecked ? "checked" : ""} style="margin-left: 10px;">
+        </label>
+        
+        ${
+          showDelete
+            ? `
+        <button class="anima-btn danger small btn-delete-db-modal" data-id="${escapeHtml(backendName)}" title="物理删除此数据库" style="margin-left:5px; height:24px; width:24px; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <i class="fa-solid fa-trash" style="font-size:12px;"></i>
+        </button>`
+            : ""
+        }
+    </div>`;
+    });
+
+    // 4. 处理“孤儿” (仅在不过滤孤儿时显示，例如“关联”模式需要显示出来以便用户解绑)
+    let orphanItems = [];
+    if (!filterOrphans) {
+      // 合并所有关联文件列表进行遍历
+      const allActiveFiles = [...currentChatFiles];
+
+      orphanItems = allActiveFiles
+        .filter((f) => normCurrentFilesSet.has(normalizeId(f))) // 剩下的就是孤儿
+        .map(
+          (orphanName) => `
+                <label class="anima-checkbox-item" style="display:flex; justify-content:space-between; align-items:center; padding:8px; border-bottom:1px solid rgba(255,255,255,0.05); cursor:pointer; opacity: 0.7;">
+                    <div style="display:flex; align-items:center; overflow:hidden;">
+                        <i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b; margin-right:8px; flex-shrink:0;"></i>
+                        <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-decoration:line-through;" title="文件缺失: ${escapeHtml(orphanName)}">
+                            ${escapeHtml(orphanName)}
+                        </span>
+                    </div>
+                    <input type="checkbox" class="anima-checkbox collection-checkbox" value="${escapeHtml(orphanName)}" checked>
+                </label>`,
+        );
+    }
+
+    const finalListHtml = [...listItems, ...orphanItems].join("");
+
+    // 5. 渲染弹窗
+    const modalContent = `
+        <div style="margin-bottom:10px; font-size:12px; color:#aaa;">
+            请选择目标数据库：
+        </div>
+        <div style="background:rgba(0,0,0,0.2); border:1px solid #444; border-radius:4px; overflow-x: auto;">
+            ${finalListHtml || '<div style="padding:10px; text-align:center;">暂无数据</div>'}
+        </div>
+        
+        <div style="margin-top:15px; display:flex; justify-content:space-between; align-items:center;">
+            <div style="display:flex; gap:5px;">
+                <button id="btn_generic_rebuild" class="anima-btn" style="background-color: #dc2626; color: white; border: 1px solid #b91c1c;" title="使用当前 API 设置重新向量化选中的数据库">
+                    <i class="fa-solid fa-dumpster-fire"></i> 批量重建
+                </button>
+                <button id="btn_generic_merge" class="anima-btn secondary" title="将选中的数据库合并为一个新库">
+                    <i class="fa-solid fa-object-group"></i> 合并选中
+                </button>
+            </div>
+            
+            <div style="display:flex; gap:10px;">
+                <button class="anima-close-rag-modal anima-btn secondary">取消</button>
+                <button id="btn_generic_confirm" class="anima-btn primary">${confirmText}</button>
+            </div>
+        </div>
+        `;
+
+    showRagModal(title, modalContent);
+
+    $("#anima-rag-modal-body")
+      .off("click", "#btn_generic_merge")
+      .on("click", "#btn_generic_merge", async () => {
+        // 1. 获取选中的 ID
+        const selectedIds = [];
+        $(".collection-checkbox:checked").each(function () {
+          selectedIds.push($(this).val());
+        });
+
+        if (selectedIds.length < 2) {
+          return toastr.warning("请至少选择 2 个数据库进行合并");
+        }
+
+        // 2. 弹出新名称输入框 (简单 prompt 或者自定义小弹窗)
+        // 这里为了简单直接用 prompt，你也可以写个更漂亮的 showRagModal 嵌套
+        const defaultName = `merged_${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_${Date.now().toString().slice(-4)}`;
+        const targetName = prompt(
+          "请输入合并后的新数据库名称 (仅限英文/数字/下划线):",
+          defaultName,
+        );
+
+        if (!targetName || !targetName.trim()) return; // 用户取消
+
+        const safeTargetName = targetName
+          .trim()
+          .replace(/[^a-zA-Z0-9@\-\._\u4e00-\u9fa5]/g, "_");
+
+        // 3. UI 反馈：锁定按钮
+        const $btn = $("#btn_generic_merge");
+        const originHtml = $btn.html();
+        $btn
+          .prop("disabled", true)
+          .html('<i class="fa-solid fa-spinner fa-spin"></i> 合并中...');
+
+        const safeToastr = /** @type {any} */ (toastr);
+        safeToastr.info("正在后端合并数据库，请稍候...", "", { timeOut: 0 });
+
+        try {
+          const response = await requestAnima("/merge", {
+            method: "POST",
+            body: { sourceIds: selectedIds, targetId: safeTargetName },
+          });
+
+          safeToastr.clear();
+
+          if (response.success) {
+            toastr.success(
+              `合并成功！<br>成功搬运: ${response.stats.success} 条<br>失败: ${response.stats.failed} 条`,
+            );
+
+            // 5. 自动关闭当前弹窗，并刷新列表
+            // 关闭弹窗
+            $("#anima-rag-modal").addClass("hidden");
+
+            // 刷新主界面的文件列表 (如果是在管理界面)
+            // 注意：由于 openDatabaseSelector 是通用的，我们这里简单粗暴地刷新一下主界面列表
+            // 如果需要更完美的体验，可以重新打开这个 selector 弹窗，但这比较复杂。
+            // 简单的做法是：告诉用户去刷新列表，或者自动刷新主界面。
+            renderUnifiedFileList();
+          } else {
+            toastr.error("合并未完全成功，请检查控制台日志");
+          }
+        } catch (err) {
+          safeToastr.clear();
+          toastr.error("合并失败: " + err.message);
+        } finally {
+          // 恢复按钮状态
+          $btn.prop("disabled", false).html(originHtml);
+        }
+      });
+
+    $("#anima-rag-modal-body")
+      .off("click", "#btn_generic_rebuild")
+      .on("click", "#btn_generic_rebuild", async () => {
+        const selectedIds = [];
+        $(".collection-checkbox:checked").each(function () {
+          selectedIds.push($(this).val());
+        });
+
+        if (selectedIds.length === 0) {
+          return toastr.warning("请至少选择 1 个数据库");
+        }
+
+        // 1. 高危警告
+        if (
+          !confirm(
+            `⚠️ 高危操作警告 ⚠️\n\n即将对 ${selectedIds.length} 个数据库进行【全量重新向量化】。\n\n` +
+              `1. 这将消耗巨大的 Token (需要调用 Embedding API)。\n` +
+              `2. 过程不可逆，旧向量将被删除。\n` +
+              `3. 请确保 API Key 余额充足。\n\n` +
+              `确定要继续吗？`,
+          )
+        )
+          return;
+
+        // 2. UI 锁定
+        const $btn = $("#btn_generic_rebuild");
+        const originHtml = $btn.html();
+        const $closeBtn = $(".anima-close-rag-modal");
+
+        $btn
+          .prop("disabled", true)
+          .html('<i class="fa-solid fa-spinner fa-spin"></i> 处理中...');
+        $closeBtn.prop("disabled", true); // 禁止关闭弹窗
+
+        const safeToastr = /** @type {any} */ (toastr);
+
+        // 获取当前 API 配置 (复用 callBackend 的逻辑)
+        // 这里的 getRagSettings() 必须在作用域内可用
+        // 🟢 修复：获取 API Key 的正确姿势
+        // 1. 获取全局 Context
+        const context = SillyTavern.getContext();
+
+        // 2. 读取插件总配置 (anima_memory_system)
+        // 注意：这里我们不读 getRagSettings() 返回的局部对象，而是读总对象
+        const parentSettings =
+          context.extensionSettings?.["anima_memory_system"] || {};
+
+        // 3. 尝试从新旧两个位置寻找 API 配置
+        // 优先: settings.api.rag (新版标准位置)
+        // 备选: settings.rag (旧版位置，可能直接混在 rag 设置里)
+        let apiCredentials = parentSettings.api?.rag;
+
+        if (!apiCredentials || !apiCredentials.key) {
+          // 回退尝试：看看是不是混在 rag 设置对象里了
+          apiCredentials = parentSettings.rag;
+        }
+
+        // 4. 最终校验
+        if (!apiCredentials || !apiCredentials.key) {
+          toastr.error(
+            "未找到有效的 Embedding API Key。\n请检查：插件设置 -> API 设置 -> RAG 模型配置。",
+          );
+          $btn.prop("disabled", false).html(originHtml);
+          $closeBtn.prop("disabled", false);
+          return;
+        }
+
+        // 保留诊断信息，但绝不把 provider key 写入日志。
+        console.log("[Anima Debug] Rebuild uses API Config:", {
+          source: apiCredentials.source,
+          url: apiCredentials.url,
+          model: apiCredentials.model,
+        });
+
+        if (!apiCredentials.key) {
+          toastr.error("未找到有效的 Embedding API Key，请先在设置中配置。");
+          $btn.prop("disabled", false).html(originHtml);
+          $closeBtn.prop("disabled", false);
+          return;
+        }
+
+        // 3. 循环执行 (串行)
+        let successDb = 0;
+        let failDb = 0;
+
+        for (let i = 0; i < selectedIds.length; i++) {
+          const dbId = selectedIds[i];
+
+          // 更新 Toast 提示进度
+          safeToastr.info(
+            `正在重建 (${i + 1}/${selectedIds.length}): ${dbId}\n请勿关闭窗口...`,
+            "",
+            { timeOut: 0 }, // 不自动消失
+          );
+
+          try {
+            const result = await requestAnima("/rebuild_collection", {
+              method: "POST",
+              body: {
+                collectionId: dbId,
+                apiConfig: {
+                  source: apiCredentials.source,
+                  url: apiCredentials.url,
+                  key: apiCredentials.key,
+                  model: apiCredentials.model,
+                },
+              },
+            });
+
+            if (result.success) {
+              successDb++;
+              console.log(`[Anima Client] ${dbId} 重建成功:`, result.stats);
+            } else {
+              failDb++;
+            }
+          } catch (err) {
+            console.error(`[Anima Client] ${dbId} 重建失败:`, err);
+            toastr.error(`数据库 ${dbId} 失败: ${err.message}`);
+            failDb++;
+          }
+        }
+
+        // 4. 完成结算
+        safeToastr.clear(); // 清除进度提示
+        if (failDb === 0) {
+          toastr.success(`批量重建完成！\n共处理 ${successDb} 个数据库。`);
+        } else {
+          toastr.warning(
+            `批量重建结束。\n成功: ${successDb}\n失败: ${failDb}\n请查看控制台日志。`,
+          );
+        }
+
+        // 5. 恢复 UI
+        $btn.prop("disabled", false).html(originHtml);
+        $closeBtn.prop("disabled", false);
+      });
+
+    $("#anima-rag-modal-body")
+      .off("click", ".btn-delete-db-modal")
+      .on("click", ".btn-delete-db-modal", async function (e) {
+        e.stopPropagation(); // 防止冒泡触发 checkbox 勾选
+        const dbId = $(this).data("id");
+
+        if (
+          !confirm(
+            `⚠️ 严重警告：\n\n确定要物理删除数据库 "${dbId}" 吗？\n此操作将彻底删除服务器上的文件，不可恢复！`,
+          )
+        )
+          return;
+
+        // UI 交互反馈
+        const $btn = $(this);
+        const originHtml = $btn.html();
+        $btn
+          .html('<i class="fa-solid fa-spinner fa-spin"></i>')
+          .prop("disabled", true);
+
+        try {
+          // 动态导入删除逻辑
+          const { deleteCollection } = await import("./db_api.js");
+          const res = await deleteCollection(dbId);
+
+          if (res && res.success) {
+            toastr.success("已物理删除: " + dbId);
+            // 移除 UI 行
+            $btn.closest("div").fadeOut(300, function () {
+              $(this).remove();
+            });
+          } else {
+            toastr.error("删除失败");
+            $btn.html(originHtml).prop("disabled", false);
+          }
+        } catch (err) {
+          toastr.error("删除出错: " + err.message);
+          $btn.html(originHtml).prop("disabled", false);
+        }
+      });
+
+    // 绑定确认
+    $(document)
+      .off("click", "#btn_generic_confirm")
+      .on("click", "#btn_generic_confirm", () => {
+        const selected = [];
+        $(".collection-checkbox:checked").each(function () {
+          selected.push($(this).val());
+        });
+
+        // 关闭弹窗
+        $("#anima-rag-modal").addClass("hidden");
+
+        // 执行回调
+        if (onConfirm) onConfirm(selected);
+      });
+
+    // 绑定取消
+    $(".anima-close-rag-modal").on("click", () =>
+      $("#anima-rag-modal").addClass("hidden"),
+    );
+  }
+
+  $("#rag_btn_import")
+    .off("click")
+    .on("click", () => {
+      openDatabaseSelector({
+        title: "管理聊天数据库",
+        confirmText: "关联",
+        filterOrphans: false,
+        excludeKB: true, // 🟢 新增：告诉弹窗组件，渲染列表时不显示 kb_ 开头的知识库
+        onConfirm: async (selectedIds) => {
+          // 这里的过滤可以保留作为双重保险，或者直接去掉也可以
+          const newChatFiles = selectedIds.filter(
+            (id) => !id.startsWith("kb_"),
+          );
+
+          await saveChatRagFiles(newChatFiles);
+          renderUnifiedFileList();
+          toastr.success(`关联已更新: ${newChatFiles.length} 个记录`);
+        },
+      });
+    });
+
+  $("#rag_btn_download_zip")
+    .off("click")
+    .on("click", () => {
+      openDatabaseSelector({
+        title: "选择要导出的数据库 (Export)",
+        confirmText: `<i class="fa-solid fa-file-arrow-down"></i> 导出选定`,
+        filterOrphans: true,
+        onConfirm: async (selectedIds) => {
+          if (selectedIds.length === 0)
+            return toastr.warning("未选择任何数据库");
+
+          const $btn = $("#rag_btn_download_zip");
+          const originalHtml = $btn.html();
+          $btn
+            .prop("disabled", true)
+            .html('<i class="fa-solid fa-spinner fa-spin"></i> 处理中...');
+
+          // 定义类型强转，防止 VSCode 报错
+          const safeToastr = /** @type {any} */ (toastr);
+
+          // 提示开始
+          const total = selectedIds.length;
+          safeToastr.info(
+            `准备导出 ${total} 个数据库，请允许浏览器下载多个文件...`,
+          );
+
+          // 🔥 核心逻辑：串行循环下载
+          // 我们使用 for...of 循环 + await，一个个下，防止浏览器同时弹太多请求被拦截
+          for (let i = 0; i < total; i++) {
+            const dbName = selectedIds[i];
+
+            try {
+              // 显示当前正在处理哪个
+              const progressToast = safeToastr.info(
+                `正在导出 (${i + 1}/${total}): ${dbName}`,
+                "",
+                { timeOut: 2000 },
+              );
+
+              // 调用封装好的下载函数 (返回 Promise)
+              await downloadSingleCollection(dbName);
+
+              // 稍微等待一下，给浏览器喘息时间，防止被判定为恶意弹窗
+              if (i < total - 1) {
+                await new Promise((r) => setTimeout(r, 1000));
+              }
+            } catch (err) {
+              toastr.error(`数据库 ${dbName} 导出失败: ${err.message}`);
+            }
+          }
+
+          $btn.prop("disabled", false).html(originalHtml);
+          toastr.success("所有导出任务已完成");
+        },
+      });
+    });
+
+  async function downloadSingleCollection(dbName) {
+    const blob = await requestAnima("/export_collection", {
+      method: "POST",
+      body: { collectionId: dbName },
+      responseType: "blob",
+    });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${dbName}_backup.zip`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  }
+  // 1. 点击按钮触发 input
+  $("#rag_btn_upload_zip")
+    .off("click")
+    .on("click", () => {
+      $("#rag_input_import_zip").click();
+    });
+  // 2. 监听文件选择
+  $("#rag_input_import_zip")
+    .off("change")
+    .on("change", async function () {
+      const file = this.files[0];
+      if (!file) return;
+
+      // 重置 input value
+      $(this).val("");
+
+      const dbName = file.name.replace(/\.zip$/i, "");
+      if (!dbName) return toastr.error("文件名无效");
+
+      requestAnima("/check_collection_exists", {
+        method: "POST",
+        body: { collectionId: dbName },
+      })
+        .then((checkData) => {
+          let force = false;
+          if (checkData.exists) {
+            if (
+              !confirm(
+                `数据库 "${dbName}" 已存在于服务器。\n\n是否覆盖？(原有数据将丢失)`,
+              )
+            ) {
+              return; // 用户取消
+            }
+            force = true;
+          }
+
+          // 开始读取文件
+          readFileAndUpload(file, dbName, force);
+        })
+        .catch((error) => {
+          toastr.error("检查文件状态失败: " + (error?.message || "未知错误"));
+        });
+    });
+
+  // 辅助函数：读取并上传
+  function readFileAndUpload(file, dbName, force) {
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      const base64Content = e.target.result;
+
+      // 类型转换，防止 VSCode 报错
+      const safeToastr = /** @type {any} */ (toastr);
+      const loadingToast = safeToastr.info("正在上传并解压...", "", {
+        timeOut: 0,
+      });
+
+      requestAnima("/import_collection", {
+        method: "POST",
+        body: {
+          collectionId: dbName,
+          zipData: base64Content,
+          force: force,
+        },
+      })
+        .then((uploadResult) => {
+          if (safeToastr.clear) safeToastr.clear(loadingToast);
+
+          if (uploadResult.success) {
+            toastr.success(`导入成功: ${dbName}`);
+
+            // 刷新列表
+            const context = SillyTavern.getContext();
+            if (context.chatId) {
+              const currentFiles = getChatRagFiles() || [];
+              renderFileList(currentFiles, context.chatId);
+            }
+          } else {
+            toastr.error("导入失败");
+          }
+        })
+        .catch((error) => {
+          if (safeToastr.clear) safeToastr.clear(loadingToast);
+          toastr.error("上传错误: " + (error?.message || "未知错误"));
+        });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  // 1. 导出策略
+  $("#rag_strategy_export")
+    .off("click")
+    .on("click", function () {
+      // 导出包含：策略详情、基础计数、门槛分数、倍率、以及依赖的节日/生理配置
+      const exportData = {
+        base_count: settings.base_count,
+        min_score: settings.min_score,
+        strategy_settings: settings.strategy_settings,
+        holidays: settings.holidays,
+        period_config: settings.period_config,
+        distributed_retrieval: settings.distributed_retrieval,
+        virtual_time_mode: settings.virtual_time_mode,
+      };
+
+      const blob = new Blob([JSON.stringify(exportData, null, 4)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `rag_strategy_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toastr.success("包含节日/基础计数的完整策略已导出");
+    });
+
+  // 2. 触发导入点击
+  $("#rag_strategy_import")
+    .off("click")
+    .on("click", () => {
+      $("#rag_input_strategy_json").click();
+    });
+
+  // 3. 处理导入文件读取
+  $("#rag_input_strategy_json")
+    .off("change")
+    .on("change", function (e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        // 使用 async 以便处理可能的异步保存
+        try {
+          const importedData = JSON.parse(e.target.result);
+
+          // 1. 深度合并数据到当前的 settings 对象
+          // 确保基础字段和 strategy_settings 都能被覆盖
+          Object.assign(settings, importedData);
+
+          // 2. 刷新表格外的“静态”输入框 (这些不在 renderStrategyTable 渲染范围内)
+          $("#rag_base_count").val(settings.base_count || 2);
+          $("#rag_min_score").val(settings.min_score || 0.2);
+          $("#rag_multiplier").val(
+            settings.strategy_settings?.candidate_multiplier || 2,
+          );
+
+          // 同步开关状态并手动触发 change 事件（以处理 UI 的显隐联动）
+          $("#rag_distributed_switch")
+            .prop("checked", !!settings.distributed_retrieval)
+            .trigger("change");
+          $("#rag_virtual_time_switch").prop(
+            "checked",
+            !!settings.virtual_time_mode,
+          );
+
+          // 3. 核心：重新调用渲染函数刷新策略列表
+          // 这会根据最新的 settings.strategy_settings 和 settings.holidays 生成新表格
+          renderStrategyTable(settings);
+
+          // 4. 立即持久化到 SillyTavern 后端
+          saveRagSettings(settings);
+
+          toastr.success("配置已成功导入并自动保存");
+
+          // 可选：如果导入涉及知识库设置变化，可以刷新文件列表
+          // renderUnifiedFileList();
+        } catch (err) {
+          console.error("[Anima RAG] Import Error:", err);
+          toastr.error("导入失败，请检查文件格式: " + err.message);
+        }
+      };
+      reader.readAsText(file);
+      $(this).val(""); // 清空 input 以允许重复导入同一文件
+    });
+}

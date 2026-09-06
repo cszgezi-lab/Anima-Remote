@@ -1,0 +1,16 @@
+.git
+deploy/.env
+deploy/data
+deploy/backups
+extension
+integration-tests
+docs
+deploy/*
+!deploy/container-entrypoint.sh
+!deploy/healthcheck
+!deploy/token-cli.js
+server/node_modules
+server/data
+server/vectors
+*.log
+coverage

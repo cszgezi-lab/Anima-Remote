@@ -1,0 +1,1108 @@
+import { generateText } from "./api.js";
+import {
+  saveSummaryBatchToWorldbook,
+  getIndexConflictInfo,
+  getPreviousSummaries,
+  getLatestSummaryInfo,
+} from "./worldbook_api.js";
+import {
+  applyRegexRules,
+  extractJsonResult,
+  processMacros,
+  getContextData,
+} from "./utils.js";
+import { autoUpdateDictionary } from "./bm25_logic.js";
+
+export const MODULE_NAME = "anima_memory_system";
+let isSummarizing = false;
+const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
+  trigger_interval: 30,
+  hide_skip_count: 5,
+  regex_strings: [],
+  output_regex: [],
+  skip_layer_zero: true,
+  regex_skip_user: true,
+  wrapper_template: "<{{index}}>{{summary}}</{{index}}>",
+  group_size: 10,
+  summary_messages: [
+    {
+      type: "char_info",
+      role: "system",
+      enabled: true,
+    },
+    {
+      type: "user_info",
+      role: "system",
+      enabled: true,
+    },
+    { type: "prev_summaries", role: "system", count: 0 },
+    {
+      role: "system",
+      content: "建议放置破限内容",
+    },
+    { role: "user", content: "{{context}}" },
+    {
+      role: "user",
+      content: "建议放置总结的要求，如字数、格式等",
+    },
+  ],
+});
+
+const DEFAULT_LOCAL_SETTINGS = Object.freeze({
+  auto_run: false,
+  exclude_user: false, // 是否排除用户内容，这通常取决于特定扮演场景
+});
+
+export function getSummarySettings() {
+  const context = SillyTavern.getContext();
+  const { extensionSettings } = context;
+
+  // -------------------------------------------------
+  // 第一步：获取全局配置 (Extension Settings)
+  // -------------------------------------------------
+  if (!extensionSettings[MODULE_NAME]) extensionSettings[MODULE_NAME] = {};
+
+  // 初始化全局配置
+  if (!extensionSettings[MODULE_NAME].summary) {
+    extensionSettings[MODULE_NAME].summary = structuredClone(
+      DEFAULT_GLOBAL_SETTINGS,
+    );
+  }
+  const globalSettings = extensionSettings[MODULE_NAME].summary;
+
+  // 补全全局配置中缺失的键 (防止旧版配置缺少新字段)
+  for (const key of Object.keys(DEFAULT_GLOBAL_SETTINGS)) {
+    if (!Object.hasOwn(globalSettings, key)) {
+      globalSettings[key] = DEFAULT_GLOBAL_SETTINGS[key];
+    }
+  }
+
+  // --- 保留原来的兼容性检查逻辑 (检查 summary_messages) ---
+  if (Array.isArray(globalSettings.summary_messages)) {
+    const hasChar = globalSettings.summary_messages.some(
+      (m) => m.type === "char_info",
+    );
+    const hasUser = globalSettings.summary_messages.some(
+      (m) => m.type === "user_info",
+    );
+
+    if (!hasUser) {
+      globalSettings.summary_messages.unshift({
+        type: "user_info",
+        role: "system",
+        enabled: true,
+      });
+    }
+    if (!hasChar) {
+      globalSettings.summary_messages.unshift({
+        type: "char_info",
+        role: "system",
+        enabled: true,
+      });
+    }
+
+    const hasPrev = globalSettings.summary_messages.some(
+      (m) => m.type === "prev_summaries",
+    );
+    if (!hasPrev) {
+      // 插入到 index 2 (即在 User Info 之后)
+      globalSettings.summary_messages.splice(2, 0, {
+        type: "prev_summaries",
+        role: "system",
+        count: 0,
+      });
+    }
+  }
+
+  // -------------------------------------------------
+  // 第二步：获取本地配置 (Chat Metadata)
+  // -------------------------------------------------
+  let localSettings = {};
+
+  if (context.chatId && context.chatMetadata) {
+    // 尝试读取 metadata 中的 'anima_config'
+    const metaConfig = context.chatMetadata["anima_config"];
+
+    if (metaConfig) {
+      localSettings = metaConfig;
+    } else {
+      // 如果是新聊天或从未保存过，使用默认本地配置
+      localSettings = structuredClone(DEFAULT_LOCAL_SETTINGS);
+    }
+  } else {
+    // 如果没有加载任何聊天，也返回默认值
+    localSettings = structuredClone(DEFAULT_LOCAL_SETTINGS);
+  }
+
+  // 补全本地配置中可能缺失的键 (防止旧 Metadata 报错)
+  for (const key of Object.keys(DEFAULT_LOCAL_SETTINGS)) {
+    if (!Object.hasOwn(localSettings, key)) {
+      localSettings[key] = DEFAULT_LOCAL_SETTINGS[key];
+    }
+  }
+
+  // -------------------------------------------------
+  // 第三步：合并返回
+  // -------------------------------------------------
+  // 将两者合并，对外部看来，这依然是一个完整的设置对象
+  return { ...globalSettings, ...localSettings };
+}
+
+export function saveSummarySettings(newSettings) {
+  const context = SillyTavern.getContext();
+  const { extensionSettings, saveSettingsDebounced } = context;
+
+  // === 1. 提取并保存全局设置 ===
+  const globalToSave = {};
+  // 遍历默认全局键，从 newSettings 中提取对应的值
+  for (const key of Object.keys(DEFAULT_GLOBAL_SETTINGS)) {
+    if (Object.hasOwn(newSettings, key)) {
+      globalToSave[key] = newSettings[key];
+    }
+  }
+
+  if (!extensionSettings[MODULE_NAME]) extensionSettings[MODULE_NAME] = {};
+  extensionSettings[MODULE_NAME].summary = globalToSave;
+  saveSettingsDebounced(); // 保存全局 settings.json
+
+  // === 2. 提取并保存本地设置 (到 Metadata) ===
+  if (context.chatId && context.chatMetadata) {
+    const localToSave = {};
+    // 遍历默认本地键
+    for (const key of Object.keys(DEFAULT_LOCAL_SETTINGS)) {
+      if (Object.hasOwn(newSettings, key)) {
+        localToSave[key] = newSettings[key];
+      }
+    }
+
+    // 写入 Metadata
+    context.chatMetadata["anima_config"] = localToSave;
+
+    // 立即保存 Metadata (因为自动化状态改变很重要，不建议 debounce)
+    context.saveMetadata().then(() => {
+      console.log(
+        "[Anima] Settings saved. (Global -> Settings, Automation -> Metadata)",
+      );
+    });
+  } else {
+    console.warn("[Anima] Saved global settings only (No chat loaded).");
+  }
+}
+
+/**
+ * 核心逻辑修正：
+ * 1. 若开启 exclude_user，则完全忽略 User 消息。
+ * 2. 若开启 regex_skip_user，User 消息将保留“原始内容” (不经过正则清洗)。
+ * 3. 否则，User 消息也会执行正则提取。
+ * 4. 第 0 层 (开场白) 强制保留原文。
+ */
+export function processMessagesWithRegex(messages, settings) {
+  // 🟢 1. 获取新设置 regex_skip_user
+  const { exclude_user, regex_strings, skip_layer_zero, regex_skip_user } =
+    settings;
+
+  let resultArray = [];
+  // processMacros 内部会处理名字，这里仅用于日志
+  // const { charName, userName } = getContextData();
+
+  console.groupCollapsed("Anima Preprocess Log");
+
+  messages.forEach((msg, idx) => {
+    const isUser = msg.is_user === true || msg.role === "user";
+    const role = isUser ? "user" : "assistant";
+    const msgId = msg.message_id !== undefined ? msg.message_id : -1;
+    const logPrefix = `[#${msgId}] ${msg.name} (${role}):`;
+
+    // 1. 彻底排除 User (最高优先级)
+    if (exclude_user && isUser) {
+      console.log(`${logPrefix} -> 排除 (User Excluded)`);
+      return;
+    }
+
+    const rawContent = msg.message || "";
+    // 先处理宏 ({{char}} -> 名字)
+    let contentWithNames = processMacros(rawContent);
+
+    let finalContent = contentWithNames;
+    let isSkippedRegex = false; // 标记是否跳过了正则
+
+    // 2. 特殊处理：第 0 层 (开场白) 豁免正则
+    if (msgId === 0 && skip_layer_zero) {
+      console.log(`${logPrefix} -> 保留原文 (Layer 0 Protected)`);
+      isSkippedRegex = true; // Layer 0 也可以视作 RAW
+    }
+    // 🟢 3. User 消息处理逻辑 (受开关控制)
+    else if (isUser) {
+      if (regex_skip_user) {
+        // 开关开启：跳过正则
+        console.log(`${logPrefix} -> 保留原文 (User Raw - Skipped by Setting)`);
+        isSkippedRegex = true;
+      } else {
+        // 开关关闭：执行正则
+        finalContent = applyRegexRules(contentWithNames, regex_strings);
+        if (finalContent !== contentWithNames) {
+          console.log(`${logPrefix} -> 正则清洗完成 (User)`);
+        }
+      }
+    }
+    // 4. Assistant 消息 (始终执行正则)
+    else {
+      finalContent = applyRegexRules(contentWithNames, regex_strings);
+      if (finalContent !== contentWithNames) {
+        console.log(`${logPrefix} -> 正则清洗完成`);
+      }
+    }
+
+    // 5. 存入结果 (去除空内容)
+    if (finalContent && finalContent.trim()) {
+      resultArray.push({
+        role: role,
+        content: finalContent.trim(),
+        // 🟢 新增：传递给 UI 预览使用，用于显示 [RAW] 标签
+        skippedRegex: isSkippedRegex,
+      });
+    }
+  });
+
+  console.groupEnd();
+  return resultArray;
+}
+
+// 在 summary_logic.js 中替换原有的 requestSummaryFromAPI
+
+export async function requestSummaryFromAPI(
+  settings,
+  contextMsgArray,
+  currentTaskIndex = null,
+) {
+  const { charName, charDesc, userName, userPersona } = getContextData();
+  const lastIdx = getLastSummarizedIndex();
+  const effectiveIndex =
+    currentTaskIndex !== null ? currentTaskIndex : lastIdx + 1;
+
+  // 1. 临时数组，用于按顺序收集所有生成的原始片段 (暂不合并)
+  let rawSegments = [];
+
+  for (const item of settings.summary_messages) {
+    // === A. 跳过未启用的条目 ===
+    // 注意：prev_summaries 没有 enabled 字段，靠 count 判断，所以单独处理
+    if (
+      (item.type === "char_info" || item.type === "user_info") &&
+      item.enabled === false
+    ) {
+      continue;
+    }
+
+    // === B. 处理角色卡信息 ===
+    if (item.type === "char_info") {
+      const content = `${processMacros(charDesc)}`;
+      rawSegments.push({ role: item.role, content: content });
+      continue;
+    }
+
+    // === C. 处理用户信息 ===
+    if (item.type === "user_info") {
+      const content = `${processMacros(userPersona)}`;
+      rawSegments.push({ role: item.role, content: content });
+      continue;
+    }
+
+    // === D. 处理前文总结 ===
+    if (item.type === "prev_summaries") {
+      const count = parseInt(item.count) || 0;
+      if (count > 0) {
+        const prevText = await getPreviousSummaries(effectiveIndex, count);
+        if (prevText) {
+          // 这里的 item.role 默认是 system，如果在 UI 开放了修改，这里会自动生效
+          rawSegments.push({ role: item.role, content: prevText });
+        }
+      }
+      continue;
+    }
+
+    // === E. 处理待总结的历史记录 {{context}} ===
+    if (item.content.includes("{{context}}")) {
+      if (contextMsgArray && contextMsgArray.length > 0) {
+        const mergedContextStr = contextMsgArray
+          .map((msg) => {
+            // 依然保持内部的前缀区分
+            const prefix =
+              msg.role === "user" ? `${userName}: ` : "assistant: ";
+            return `${prefix}${msg.content}`;
+          })
+          .join("\n");
+
+        // 这里通常建议保持为 user，但如果你想让用户自定义 context 的 role，
+        // 可以将下方的 "user" 改为 item.role
+        rawSegments.push({
+          role: "user",
+          content: mergedContextStr,
+        });
+      }
+      continue;
+    }
+
+    // === F. 普通文本条目 ===
+    // 处理 {{user}}, {{char}} 等宏
+    rawSegments.push({
+      role: item.role,
+      content: processMacros(item.content),
+    });
+  }
+
+  // 2. 最终合并逻辑 (Merging Logic)
+  if (rawSegments.length === 0) return null;
+
+  let finalMessages = [];
+  // 先放入第一条
+  finalMessages.push(rawSegments[0]);
+
+  // 从第二条开始遍历
+  for (let i = 1; i < rawSegments.length; i++) {
+    const current = rawSegments[i];
+    const prev = finalMessages[finalMessages.length - 1];
+
+    // ✨ 核心修改：如果 Role 相同，则合并内容
+    if (current.role === prev.role) {
+      // 使用换行符分隔
+      prev.content += "\n\n" + current.content;
+    } else {
+      // Role 不同，推入新消息
+      finalMessages.push(current);
+    }
+  }
+
+  console.log("[Anima] Merged Messages for API:", finalMessages);
+
+  return await generateText(finalMessages, "llm");
+}
+
+function getMetaKeyId() {
+  return "anima_last_summarized_id";
+}
+
+function getMetaKeyIndex() {
+  return "anima_last_summarized_index";
+}
+
+export function getLastSummarizedId() {
+  const context = SillyTavern.getContext();
+  if (!context || !context.chatMetadata) return -1;
+  return context.chatMetadata[getMetaKeyId()] ?? -1;
+}
+
+export function getLastSummarizedIndex() {
+  const context = SillyTavern.getContext();
+  if (!context || !context.chatMetadata) return 0;
+  return context.chatMetadata[getMetaKeyIndex()] ?? 0;
+}
+
+// summary_logic.js
+
+export async function saveSummaryProgress(id, index) {
+  const context = SillyTavern.getContext();
+  if (context) {
+    context.chatMetadata[getMetaKeyId()] = id;
+    context.chatMetadata[getMetaKeyIndex()] = index;
+    await context.saveMetadata();
+    console.log(`[Anima] Progress Updated: ID=${id}, Index=${index}`);
+    const event = new CustomEvent("anima_progress_updated");
+    document.dispatchEvent(event);
+  }
+}
+
+export async function handlePostSummary(
+  startId,
+  endId,
+  index,
+  settings,
+  lockedChatId = null,
+) {
+  const currentContextId = SillyTavern.getContext().chatId;
+  if (lockedChatId && currentContextId !== lockedChatId) {
+    console.log(
+      `[Anima] 窗口已切换 (Target: ${lockedChatId}, Current: ${currentContextId})。跳过 UI 更新。`,
+    );
+    return;
+  }
+
+  // 1. 计算隐藏截止点
+  const keepCount = settings.hide_skip_count;
+  const hideEndId = endId - keepCount;
+
+  // 2. ✅ 核心修复：更安全的增量隐藏逻辑
+  // 不再使用索引遍历，而是向 ST 请求该范围内的“有效消息”
+  if (hideEndId >= 0) {
+    const updates = [];
+
+    try {
+      // 请求 0 到 hideEndId 的所有消息
+      // ST 会自动处理越界问题：如果 hideEndId 是 1000 但只有 50 条消息，它只返回 50 条
+      const msgsToCheck = window.TavernHelper.getChatMessages(`0-${hideEndId}`);
+
+      if (msgsToCheck && Array.isArray(msgsToCheck)) {
+        for (const msg of msgsToCheck) {
+          // 双重检查：确保对象存在且当前未隐藏
+          if (msg && !msg.is_hidden) {
+            updates.push({
+              message_id: msg.message_id,
+              is_hidden: true,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[Anima] 获取消息范围失败，跳过隐藏步骤:", e);
+    }
+
+    // 只有当列表不为空时才提交
+    if (updates.length > 0) {
+      console.log(`[Anima] 正在执行增量隐藏: ${updates.length} 条消息`);
+      await window.TavernHelper.setChatMessages(updates, {
+        refresh: "affected",
+      });
+    } else {
+      // console.log("[Anima] 无需更新隐藏状态");
+    }
+  }
+
+  // 3. 棘轮机制 (保持不变)
+  const currentLastId = getLastSummarizedId();
+  if (endId > currentLastId) {
+    await saveSummaryProgress(endId, index);
+  } else {
+    console.log(
+      `[Anima] Manual fill detected (End ${endId} <= Current ${currentLastId}). Metadata NOT updated.`,
+    );
+  }
+}
+
+/**
+ * 获取或初始化叙事时间 (Narrative Time)
+ * 优先级: 1. API获取文件真实创建时间 -> 2. Metadata缓存 -> 3. 文件名正则解析 -> 4. 当前时间兜底
+ */
+export async function getOrInitNarrativeTime() {
+  const context = SillyTavern.getContext();
+  if (!context) return Date.now();
+
+  const chatId = context.chatId;
+  const metadata = context.chatMetadata || {};
+  let finalTime = null;
+
+  // 1. 优先通过 API 获取底层的 create_date (真实物理时间)
+  if (chatId) {
+    try {
+      const charId = context.characterId;
+      // 确保是单人角色聊天
+      if (
+        charId !== undefined &&
+        context.characters &&
+        context.characters[charId]
+      ) {
+        const currentChar = context.characters[charId];
+
+        const response = await $.post("/api/chats/get", {
+          ch_name: currentChar.name,
+          avatar_url: currentChar.avatar,
+          file_name: chatId,
+        });
+
+        // 提取第 0 项的 Header 数据
+        if (
+          Array.isArray(response) &&
+          response.length > 0 &&
+          response[0].create_date
+        ) {
+          const createDateStr = response[0].create_date;
+
+          // 将 "2026-02-03@16h00m48s" 转换为 "2026-02-03T16:00:48"
+          const isoString = createDateStr
+            .replace("@", "T")
+            .replace("h", ":")
+            .replace("m", ":")
+            .replace("s", "");
+
+          const apiTime = new Date(isoString).getTime();
+
+          if (!isNaN(apiTime) && apiTime > 0) {
+            console.log(
+              "[Anima] 从底层 API 解析物理文件时间成功:",
+              new Date(apiTime).toLocaleString(),
+            );
+
+            // ⚡ 核心修复：如果 API 获取的真实时间与 Metadata 记录的不一致，强行同步修正 Metadata
+            if (metadata.anima_narrative_time !== apiTime) {
+              if (context.chatMetadata) {
+                context.chatMetadata.anima_narrative_time = apiTime;
+                if (context.saveMetadata) await context.saveMetadata();
+              }
+              console.log(
+                "[Anima] 发现时间戳偏移，Metadata 已自动修正为物理文件时间",
+              );
+            }
+
+            return apiTime; // 直接返回最准确的 API 时间
+          }
+        }
+      }
+    } catch (error) {
+      console.warn("[Anima] API 获取 create_date 失败，将尝试降级流程:", error);
+    }
+  }
+
+  // 2. 降级方案 A：检查 Metadata 中是否已存在缓存
+  if (
+    metadata.anima_narrative_time !== undefined &&
+    metadata.anima_narrative_time !== null
+  ) {
+    const savedTime = metadata.anima_narrative_time;
+    let parsedTime = Number(savedTime);
+
+    // 兼容旧数据中可能存在的 ISO 字符串
+    if (isNaN(parsedTime) && typeof savedTime === "string") {
+      parsedTime = new Date(savedTime).getTime();
+    }
+
+    if (!isNaN(parsedTime) && parsedTime > 0) {
+      return parsedTime;
+    }
+  }
+
+  // 3. 降级方案 B：从文件名解析
+  if (chatId && finalTime === null) {
+    const name = chatId.replace(/\.(json|jsonl)$/i, "");
+    // 尝试匹配常见格式: Role - YYYY-MM-DD @HHh MMm SSs MSms
+    const match = name.match(
+      /@\s*(\d{1,2})h\s*(\d{1,2})m\s*(\d{1,2})s(\s*(\d{1,3})ms)?/,
+    );
+
+    if (match) {
+      const dateMatch = name.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+      const year = dateMatch ? parseInt(dateMatch[1]) : 1970;
+      const month = dateMatch ? parseInt(dateMatch[2]) - 1 : 0;
+      const day = dateMatch ? parseInt(dateMatch[3]) : 1;
+
+      const h = parseInt(match[1]) || 0;
+      const m = parseInt(match[2]) || 0;
+      const s = parseInt(match[3]) || 0;
+      const ms = match[5] ? parseInt(match[5]) : 0;
+
+      finalTime = new Date(year, month, day, h, m, s, ms).getTime();
+
+      if (isNaN(finalTime)) {
+        finalTime = null; // 交给下一步兜底
+      } else {
+        console.log(
+          "[Anima] (降级)从文件名解析时间成功:",
+          new Date(finalTime).toLocaleString(),
+        );
+      }
+    }
+  }
+
+  // 4. 终极兜底：当前时间
+  if (finalTime === null) {
+    console.warn(
+      "[Anima] API 和文件名提取均失败，且无 Metadata 缓存，使用当前时间作为锚点",
+    );
+    finalTime = Date.now();
+  }
+
+  // 将降级获取到的时间写入 Metadata 持久化
+  if (context.chatMetadata) {
+    context.chatMetadata.anima_narrative_time = finalTime;
+    if (context.saveMetadata) await context.saveMetadata();
+    console.log("[Anima] 降级 Narrative Time 已固化到 Metadata");
+  }
+
+  return finalTime;
+}
+
+/**
+ * 执行总结核心任务
+ */
+export async function runSummarizationTask({
+  force = false,
+  customRange = null,
+  manualIndex = null,
+} = {}) {
+  const settings = getSummarySettings();
+
+  // 🛑 1. 门卫检查
+  if (isSummarizing) {
+    console.log("[Anima] Task skipped: Summarization already in progress.");
+    return;
+  }
+
+  // 🛑 2. 配置检查
+  if (!force && !settings.auto_run) return;
+
+  // 🔒 3. 锁定 Chat ID (关键：防止切窗后 ID 变化)
+  const currentChatId = SillyTavern.getContext().chatId;
+  if (!currentChatId) return;
+
+  // 🔒 4. 上锁
+  isSummarizing = true;
+
+  try {
+    // =======================================================
+    // ✨✨✨ [新增逻辑] 阶段 A：基于世界书的自动同步 ✨✨✨
+    // 作用：处理“用户切走窗口又切回来”的情况。
+    // 检查硬盘里的世界书进度是否比当前的 Metadata 进度更新。
+    // =======================================================
+    if (!customRange) {
+      // 1. 获取当前 Metadata 记录的 ID
+      const currentMetaId = getLastSummarizedId();
+
+      // 2. 读取世界书里的最新进度 (使用 currentChatId 确保读对文件)
+      // 注意：请确保文件头已 import { getLatestSummaryInfo } from "./worldbook_api.js"
+      const wbInfo = await getLatestSummaryInfo(currentChatId);
+
+      // 3. 如果世界书 (wbInfo) 比 Metadata (currentMetaId) 更新
+      if (wbInfo && wbInfo.maxEndId > currentMetaId) {
+        console.log(
+          `[Anima] 🔄 同步检测: 世界书进度 (#${wbInfo.maxBatchId}, End:${wbInfo.maxEndId}) 领先于 Metadata (${currentMetaId})。正在补齐 UI...`,
+        );
+
+        // A. 更新 Metadata 指针
+        await saveSummaryProgress(wbInfo.maxEndId, wbInfo.maxBatchId);
+
+        // B. 执行 UI 补发隐藏
+        // 注意：这里不传 currentChatId，因为现在肯定是在当前窗口，必须强制执行 UI 更新
+        await handlePostSummary(
+          0,
+          wbInfo.maxEndId,
+          wbInfo.maxBatchId,
+          settings,
+          // 这里的 lockedChatId 留空/null，表示强制执行 UI 更新
+        );
+
+        if (window.toastr)
+          toastr.info(`Anima: 进度已从世界书同步至 #${wbInfo.maxBatchId}`);
+      }
+    }
+
+    // =======================================================
+    // 📜 [原有逻辑] 阶段 B：基于隐藏消息的自动同步 (兜底) 📜
+    // 作用：处理首次运行或 Metadata 丢失但有隐藏消息的情况。
+    // (保持你的代码原样，未做删减)
+    // =======================================================
+    let lastSummarizedId = getLastSummarizedId();
+    if (lastSummarizedId === -1 && !customRange) {
+      try {
+        const hiddenMsgs = window.TavernHelper.getChatMessages(
+          "0-{{lastMessageId}}",
+          { hide_state: "hidden", include_swipes: false },
+        );
+        if (hiddenMsgs && hiddenMsgs.length > 0) {
+          const maxHiddenId = hiddenMsgs[hiddenMsgs.length - 1].message_id;
+          const interval = Math.max(1, settings.trigger_interval);
+          const reservedIndex = Math.ceil(maxHiddenId / interval);
+
+          console.log(
+            `[Anima] Auto-Sync (Legacy): Detected hidden messages up to ${maxHiddenId}. Syncing pointer...`,
+          );
+
+          await saveSummaryProgress(maxHiddenId, reservedIndex);
+          // 更新局部变量，确保下方循环能读到最新值
+          lastSummarizedId = maxHiddenId;
+
+          if (window.toastr)
+            toastr.info(
+              `Anima: 已自动同步进度至 #${reservedIndex} (楼层 ${maxHiddenId})`,
+            );
+        }
+      } catch (e) {
+        console.error("[Anima] Auto-Sync check failed:", e);
+      }
+    }
+
+    // =======================================================
+    // 🔄 [原有逻辑] 阶段 C：循环追赶逻辑 🔄
+    // =======================================================
+    let keepRunning = true;
+
+    while (keepRunning) {
+      // A. 每次循环开头，重新读取最新的进度
+      lastSummarizedId = getLastSummarizedId();
+
+      let startId, targetEndId, finalIndex;
+
+      // B. 计算本轮目标
+      if (customRange) {
+        // --- 手动模式 ---
+        startId = customRange.start;
+        targetEndId = customRange.end;
+        finalIndex =
+          manualIndex !== null && !isNaN(manualIndex)
+            ? manualIndex
+            : getLastSummarizedIndex() + 1;
+        keepRunning = false;
+      } else {
+        // --- 自动模式 (Auto Mode) ---
+        let lastMsgArray;
+        try {
+          lastMsgArray = window.TavernHelper.getChatMessages(-1);
+        } catch (e) {}
+
+        if (!lastMsgArray || !lastMsgArray.length) {
+          keepRunning = false;
+          break;
+        }
+
+        const latestMsg = lastMsgArray[0];
+        const latestId = latestMsg.message_id;
+        const interval = settings.trigger_interval;
+
+        // 1. 计算理论上的截止点 (例如: 上次4 + 间隔5 = 目标9)
+        const calcTargetEndId = lastSummarizedId + interval;
+
+        // 如果还没到理论截止点，直接退出
+        if (latestId < calcTargetEndId) {
+          keepRunning = false;
+          break;
+        }
+
+        // 2. 获取【理论截止点】那一条消息的详细信息
+        // 我们需要判断第 29 楼到底是谁发的
+        const targetMsgList = window.TavernHelper.getChatMessages(
+          `${calcTargetEndId}-${calcTargetEndId}`,
+        );
+        if (!targetMsgList || !targetMsgList.length) {
+          console.log(
+            `[Anima] 无法获取目标楼层 #${calcTargetEndId}，停止任务。`,
+          );
+          keepRunning = false;
+          break;
+        }
+        const targetMsg = targetMsgList[0];
+        const isTargetUser = targetMsg.is_user || targetMsg.role === "user";
+
+        // 3. 根据角色修正总结范围
+        if (isTargetUser) {
+          // 情况 A: 29楼是 User
+          // 策略: 回退一格，总结 0-28。这样 29(User) 会留给下一批次作为开头。
+          console.log(
+            `[Anima] 目标截止点 #${calcTargetEndId} 是 User，自动回退至 #${calcTargetEndId - 1} 以保持交互完整。`,
+          );
+          targetEndId = calcTargetEndId - 1;
+        } else {
+          // 情况 B: 29楼是 AI
+          // 策略: 必须等待 30 楼出现才能总结 0-29 (避免 AI 正在生成或用户想重随)
+          if (latestId === calcTargetEndId) {
+            console.log(
+              `[Anima] 挂起: 目标楼层 #${calcTargetEndId} 为 AI 回复，等待后续 User 发言确认 (Current #${latestId})`,
+            );
+            keepRunning = false;
+            break;
+          }
+          // 如果 latest > 14 (User 已经回了 15)，则可以放心地总结 0-14
+          targetEndId = calcTargetEndId;
+        }
+
+        // 设定本轮任务参数
+        startId = lastSummarizedId + 1;
+        finalIndex = getLastSummarizedIndex() + 1;
+
+        // 兜底防止 start > end (例如间隔设为1且连续User发言的极端情况)
+        if (startId > targetEndId) {
+          console.log(
+            `[Anima] 范围计算调整后无效 (${startId}-${targetEndId})，跳过本轮，等待更多上下文。`,
+          );
+          keepRunning = false;
+          break;
+        }
+      }
+
+      // C. 冲突检测
+      if (force && customRange) {
+        const conflict = await getIndexConflictInfo(finalIndex);
+        if (conflict) {
+          const confirmMsg = `⚠️ 序号 [#${finalIndex}] 已存在于世界书条目 [${conflict.entryName}] 中。\n如果继续，将会覆盖原总结的内容，是否继续？`;
+          if (!confirm(confirmMsg)) return;
+        }
+      }
+
+      if (window.toastr) {
+        toastr.info(
+          `Anima: 正在总结 #${finalIndex} (楼层 ${startId}-${targetEndId})...`,
+        );
+      }
+
+      // D. 获取消息
+      const msgs = window.TavernHelper.getChatMessages(
+        `${startId}-${targetEndId}`,
+        { include_swipes: false },
+      );
+
+      if (!msgs || !msgs.length) {
+        keepRunning = false;
+        break;
+      }
+
+      const contextMsgArray = processMessagesWithRegex(msgs, settings);
+
+      // E. 正则过滤为空时的处理
+      if (!contextMsgArray || contextMsgArray.length === 0) {
+        console.log(
+          `[Anima] Range ${startId}-${targetEndId} empty after regex. Skipping API.`,
+        );
+        // 🟢 这里也要传入 currentChatId 吗？
+        // 建议传入，虽然是跳过API，但如果用户切走了，我们也不希望乱改 UI
+        await handlePostSummary(
+          startId,
+          targetEndId,
+          finalIndex,
+          settings,
+          currentChatId, // <--- 传入锁定的 ID
+        );
+        continue;
+      }
+
+      let summaryBatch = [];
+
+      // F. API 请求
+      const rawResult = await requestSummaryFromAPI(
+        settings,
+        contextMsgArray,
+        finalIndex,
+      );
+      if (!rawResult) throw new Error("API 返回为空");
+
+      console.log("[Anima] Raw Model Output:", rawResult);
+
+      // ✨✨ 1. 优先提取 dict_updates 并执行更新 (互不干扰)
+      const dictUpdates = extractDictUpdates(rawResult);
+      if (dictUpdates.length > 0) {
+        await autoUpdateDictionary(dictUpdates);
+      }
+
+      // 1. 尝试提取 JSON (通过 JSDoc 强制声明为 any，打破 never 推断)
+      /** @type {any} */
+      let parsedResult = extractJsonResult(rawResult);
+
+      // =======================================================
+      // ✨ [新增修复] 核心解包逻辑：剥除外层数组外壳
+      // 应对 extractJsonResult 将对象包裹成 [{ "summaries": [...] }] 的情况
+      // =======================================================
+      if (
+        parsedResult &&
+        Array.isArray(parsedResult) &&
+        parsedResult.length === 1 &&
+        typeof parsedResult[0] === "object" &&
+        parsedResult[0] !== null &&
+        !Array.isArray(parsedResult[0])
+      ) {
+        // 如果数组里只包着一个对象，并且这个对象符合我们的新版结构
+        if (
+          "summaries" in parsedResult[0] ||
+          "dict_updates" in parsedResult[0]
+        ) {
+          console.log(
+            "[Anima] 发现被数组包裹的顶层 JSON 对象，执行安全解包...",
+          );
+          parsedResult = parsedResult[0];
+        }
+      }
+
+      // 2. 兼容各种 JSON 结构 (原有逻辑保持不变)
+      if (
+        parsedResult &&
+        typeof parsedResult === "object" &&
+        !Array.isArray(parsedResult)
+      ) {
+        // 使用括号语法避开 VSCode 的严格属性检查
+        if (
+          parsedResult["summaries"] &&
+          Array.isArray(parsedResult["summaries"])
+        ) {
+          parsedResult = parsedResult["summaries"];
+        } else if (
+          parsedResult["summary"] &&
+          Array.isArray(parsedResult["summary"])
+        ) {
+          parsedResult = parsedResult["summary"];
+        } else if (
+          parsedResult["data"] &&
+          Array.isArray(parsedResult["data"])
+        ) {
+          parsedResult = parsedResult["data"];
+        } else if (
+          !parsedResult["dict_updates"] ||
+          Object.keys(parsedResult).length > 1
+        ) {
+          // 它是一个单条的总结对象，且不全都是 dict_updates
+          console.log(
+            "[Anima] Detected single JSON object, converting to array.",
+          );
+          parsedResult = [parsedResult];
+        } else {
+          // 如果解析出来对象里【只有】dict_updates，没有总结内容，设为空数组走纯文本兜底
+          parsedResult = [];
+        }
+      }
+
+      // 2. 校验逻辑 (此时无论是数组还是单对象，都已统一为数组格式)
+      if (
+        parsedResult &&
+        Array.isArray(parsedResult) &&
+        parsedResult.length > 0
+      ) {
+        summaryBatch = parsedResult.map((item) => {
+          const content =
+            item.summary ||
+            item.Summary ||
+            item.content ||
+            item.Content ||
+            item.text ||
+            item.Text ||
+            "";
+          let tags = [];
+          const rawTags = item.tags || item.Tags || item.tag || item.Tag;
+          if (Array.isArray(rawTags)) {
+            tags = rawTags;
+          }
+          // ✨ 修改点 B：方案 C (通用标签读取)
+          else if (typeof rawTags === "object") {
+            Object.entries(rawTags).forEach(([key, val]) => {
+              if (Array.isArray(val)) {
+                tags = tags.concat(val);
+              } else if (typeof val === "string") {
+                tags.push(val);
+              } else if (typeof val === "boolean" && val === true) {
+                // 将 key 首字母大写作为标签 (如 "important": true -> "Important")
+                tags.push(key.charAt(0).toUpperCase() + key.slice(1));
+              }
+            });
+          } else if (typeof rawTags === "string") {
+            tags = [rawTags];
+          }
+
+          return {
+            content: content,
+            tags: [...new Set(tags)].filter((t) => t),
+          };
+        });
+      } else {
+        // (保持原有的纯文本兜底逻辑不变)
+        let finalContent = rawResult;
+        if (settings.output_regex && settings.output_regex.length > 0) {
+          finalContent = applyRegexRules(rawResult, settings.output_regex);
+        }
+        summaryBatch.push({
+          content: finalContent,
+          tags: [],
+        });
+      }
+
+      summaryBatch = summaryBatch.filter(
+        (s) => s.content && s.content.trim() !== "",
+      );
+      if (summaryBatch.length === 0) {
+        console.warn("[Anima Error Debug] Raw Result:", rawResult); // 依然在控制台留底
+
+        // 截取前 500 个字符，防止内容过长导致弹窗溢出
+        let debugSnippet = "";
+        if (typeof rawResult === "string") {
+          debugSnippet = rawResult.slice(0, 500);
+        } else {
+          // 如果是对象，转字符串
+          try {
+            debugSnippet = JSON.stringify(rawResult).slice(0, 500);
+          } catch (e) {
+            debugSnippet = "无法序列化的对象";
+          }
+        }
+
+        // 抛出带内容的错误，这样 catch 块就能捕获到了
+        throw new Error(
+          `解析失败(空内容)。API返回片段:\n\n${debugSnippet}\n\n(请检查格式是否为合法JSON)`,
+        );
+      }
+
+      // =======================================================
+      // 🟢 修改点 1: 存入世界书，传入 currentChatId
+      // =======================================================
+      // 确保写入的是任务开始时锁定的那个聊天文件
+      await saveSummaryBatchToWorldbook(
+        summaryBatch,
+        finalIndex,
+        startId,
+        targetEndId,
+        settings,
+        currentChatId, // <--- ✨✨✨ 传入锁定的 ID
+      );
+
+      // =======================================================
+      // 🟢 修改点 2: 保存进度，传入 currentChatId
+      // =======================================================
+      // 如果用户切走了窗口，handlePostSummary 内部会拦截 UI 操作
+      await handlePostSummary(
+        startId,
+        targetEndId,
+        finalIndex,
+        settings,
+        currentChatId, // <--- ✨✨✨ 传入锁定的 ID
+      );
+
+      console.log(`[Anima] 批次 #${finalIndex} 完成。检查是否有更多待处理...`);
+
+      if (window.toastr) {
+        // 使用 success 样式表示成功，提示用户该序号已保存
+        toastr.success(`Anima: 总结 #${finalIndex} 已成功存入世界书`);
+      }
+      document.dispatchEvent(new CustomEvent("anima_summary_written"));
+
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  } catch (err) {
+    console.error("[Anima Error]", err);
+    if (err.message.includes("API返回片段")) {
+      alert("Anima 错误: " + err.message);
+    } else if (window.toastr) {
+      toastr.error("自动化总结出错: " + err.message);
+    }
+  } finally {
+    setTimeout(() => {
+      isSummarizing = false;
+      console.log("[Anima] Task cycle finished. Lock released (Delayed).");
+    }, 1500);
+  }
+}
+/**
+ * 获取当前是否正在执行总结任务 (用于 UI 禁用按钮)
+ */
+export function getIsSummarizing() {
+  return isSummarizing;
+}
+
+/**
+ * 从 LLM 混杂的输出中强行抓取 dict_updates 数组 (安全版本)
+ */
+function extractDictUpdates(rawResult) {
+  let updates = [];
+  try {
+    // 1. 加上 'i' 标志，支持 "Dict_Updates" 或 "DICT_UPDATES"
+    const match = rawResult.match(
+      /"dict_updates"\s*:\s*(\[\s*(?:\{[\s\S]*?\}\s*,?\s*)*\])/i,
+    );
+    if (match) {
+      updates = JSON.parse(match[1]);
+    } else {
+      // 2. 兜底：如果 LLM 把它们全包在了一个大对象里
+      const parsed = JSON.parse(rawResult);
+      if (parsed && typeof parsed === "object") {
+        // 不区分大小写地查找 key
+        const key = Object.keys(parsed).find(
+          (k) => k.toLowerCase() === "dict_updates",
+        );
+        if (key && Array.isArray(parsed[key])) {
+          updates = parsed[key];
+        }
+      }
+    }
+  } catch (e) {
+    // 解析失败静默忽略，绝不阻断后续正常的总结流程
+  }
+  return updates;
+}

@@ -1,0 +1,16 @@
+{
+  "name": "anima-remote-integration-tests",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dependency-free static and optional black-box tests for Anima Remote",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:static": "node --test tests/static-contract.test.js",
+    "test:blackbox": "node --test tests/blackbox.test.js",
+    "test:local": "node run-local-blackbox.js"
+  }
+}
