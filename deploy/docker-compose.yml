@@ -18,7 +18,10 @@ services:
       ANIMA_PORT: "8000"
       ANIMA_DATA_ROOT: /var/lib/anima
       ANIMA_HISTORY_LIMIT: "${ANIMA_HISTORY_LIMIT:-20}"
-      ANIMA_CORS_ORIGINS: "${ANIMA_CORS_ORIGINS:-null,tauri://localhost,https://tauri.localhost}"
+      # Tauri v1 uses tauri://localhost; Tauri v2 commonly uses
+      # http://tauri.localhost.  Keep both so the desktop/mobile WebView can
+      # send authenticated requests without weakening bearer-token auth.
+      ANIMA_CORS_ORIGINS: "${ANIMA_CORS_ORIGINS:-null,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost,https://localhost}"
       ANIMA_OUTBOUND_ALLOWLIST: "${ANIMA_OUTBOUND_ALLOWLIST:-provider.example}"
       ANIMA_OUTBOUND_ALLOW_HTTP: "${ANIMA_OUTBOUND_ALLOW_HTTP:-false}"
       ANIMA_OUTBOUND_ALLOW_PRIVATE: "${ANIMA_OUTBOUND_ALLOW_PRIVATE:-false}"
