@@ -40,6 +40,7 @@ import {
   saveSettingsToCharacterCard,
 } from "./scripts/status_logic.js";
 import { initToolsSettings } from "./scripts/tools.js";
+import { initAssistant } from "./scripts/assistant.js";
 import { escapeHtml } from "./scripts/utils.js";
 import { defaultStatusPrompts } from "./config/default_status_prompts.js";
 import { defaultGCPrompts } from "./config/default_gc_prompts.js";
@@ -117,6 +118,7 @@ import { initAnimaTransport } from "./scripts/transport.js";
     checkMobileState();
 
     initApiSettings();
+    initAssistant();
     initStatusSettings();
     initSummarySettings();
     initRagSettings();

@@ -76,7 +76,7 @@ function saveGlobalSettings() {
   }
 }
 
-function getGlobalKbSettingsFull() {
+export function getGlobalKbSettingsFull() {
   if (typeof SillyTavern === "undefined" || !SillyTavern.getContext)
     return DEFAULT_KB_SETTINGS;
   const { extensionSettings } = SillyTavern.getContext();
@@ -99,7 +99,7 @@ function getGlobalKbSettingsFull() {
 // ==========================================
 // 🧠 角色卡状态读写 (SillyTavern V2 Spec)
 // ==========================================
-function getCharKbSettings() {
+export function getCharKbSettings() {
   if (typeof SillyTavern === "undefined" || !SillyTavern.getContext)
     return { libs: [] };
   const { characterId, characters } = SillyTavern.getContext();
@@ -108,18 +108,22 @@ function getCharKbSettings() {
   return char.data?.extensions?.anima_kb_settings || { libs: [] };
 }
 
-async function saveCharKbSettings(libsConfig) {
+export async function saveCharKbSettings(libsConfig) {
   const { writeExtensionField, characterId } = SillyTavern.getContext();
-  if (characterId === undefined)
-    return toastr.warning("未选择角色，无法保存专属配置");
+  if (characterId === undefined || characterId === null) {
+    toastr.warning("未选择角色，无法保存专属配置");
+    return false;
+  }
   try {
     await writeExtensionField(characterId, "anima_kb_settings", {
       libs: libsConfig,
     });
     toastr.success("知识库检索状态已保存至该角色卡！");
+    return true;
   } catch (e) {
     console.error("[Anima KB] 保存角色卡失败", e);
     toastr.error("保存角色卡发生异常");
+    return false;
   }
 }
 
@@ -289,7 +293,7 @@ function renderKnowledgeUI(container, settings, kbList, dictionaries) {
 
   const mainHtml = `
   ${masterSwitchHtml}
-    <div id="kb_main_content_wrapper">
+    <div id="kb_main_content_wrapper" class="${contentVisibilityClass}">
         <div class="anima-setting-group">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
                 <h2 class="anima-title" style="margin:0;"><i class="fa-solid fa-magnifying-glass"></i> 知识库检索</h2>
@@ -499,6 +503,9 @@ function bindKnowledgeEvents(dictionaries) {
   // === 0. 总开关控制 ===
   $container.find("#kb_master_switch").on("change", function () {
     const isEnabled = $(this).prop("checked");
+    const settings = getGlobalKbSettingsFull();
+    settings.kb_enabled = isEnabled;
+    saveGlobalSettings();
 
     if (isEnabled) {
       $container.find("#kb_main_content_wrapper").removeClass("hidden");
