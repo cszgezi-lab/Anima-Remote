@@ -112,6 +112,7 @@ async function proxyFetch(targetUrl, options = {}) {
     body,
     isStream = false,
     signal,
+    timeoutMs = getTransportConfig().timeoutMs,
   } = options;
   throwIfAborted(signal);
   return fetchAnima("/proxy/forward", {
@@ -119,7 +120,7 @@ async function proxyFetch(targetUrl, options = {}) {
     body: { targetUrl, method, headers, body, isStream },
     isStream,
     signal,
-    timeoutMs: getTransportConfig().timeoutMs,
+    timeoutMs,
   });
 }
 
@@ -1427,7 +1428,7 @@ export async function generateText(
   overrideConfig = null,
   requestOptions = {},
 ) {
-  const { signal } = requestOptions || {};
+  const { signal, timeoutMs } = requestOptions || {};
 
   try {
     throwIfAborted(signal);
@@ -1594,6 +1595,7 @@ export async function generateText(
           body: requestBody,
           isStream: stream,
           signal,
+          timeoutMs,
         });
 
         throwIfAborted(signal);
@@ -1790,6 +1792,7 @@ export async function generateText(
           body: requestBody,
           isStream: !!stream,
           signal,
+          timeoutMs,
         });
 
         throwIfAborted(signal);

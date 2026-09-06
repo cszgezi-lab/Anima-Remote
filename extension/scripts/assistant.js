@@ -924,7 +924,17 @@ async function runSkillAssistantTurn(userText) {
   renderSkillAssistant();
 
   try {
-    const raw = await generateText(skillAssistantState.messages, "llm");
+    // The configuration prompt is large and must be parsed as one JSON result.
+    // Do not inherit the user's streaming preference here: mobile WebViews and
+    // some provider proxies can abort the response body while the assistant is
+    // still producing its plan.
+    const llmConfig = getAnimaConfig().api?.llm || {};
+    const raw = await generateText(
+      skillAssistantState.messages,
+      "llm",
+      { ...llmConfig, stream: false },
+      { timeoutMs: 120_000 },
+    );
     const result = parseSkillAgentResponse(raw);
     skillAssistantState.messages.push({ role: "assistant", content: raw });
     skillAssistantState.uiMessages.push({
