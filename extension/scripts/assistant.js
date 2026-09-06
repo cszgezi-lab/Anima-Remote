@@ -1334,6 +1334,11 @@ async function runSkillAssistantTurn(userText) {
 async function openSkillAssistant() {
   ensureAssistantModal();
   const saved = loadSkillAssistantHistory();
+  const savedSkillText = String(saved?.skillText || "");
+  const savedSkillMode = saved?.skillMode || "";
+  const restoredSkillText = savedSkillMode
+    ? savedSkillText
+    : markdownToPlainText(savedSkillText);
   skillAssistantState = saved
     ? {
         ...saved,
@@ -1346,8 +1351,8 @@ async function openSkillAssistant() {
           : saved.skillFileMeta?.name
             ? [saved.skillFileMeta]
             : [],
-        skillText: String(saved.skillText || "").slice(0, MAX_IMPORTED_SKILL_CHARS),
-        skillMode: saved.skillMode || (saved.skillText ? "direct" : ""),
+        skillText: restoredSkillText.slice(0, MAX_IMPORTED_SKILL_CHARS),
+        skillMode: savedSkillMode || (savedSkillText ? "direct" : ""),
         skillProgress: "",
         error: saved.error || "",
       }
@@ -1365,8 +1370,47 @@ async function openSkillAssistant() {
         plan: null,
         error: "",
       };
-  if (skillAssistantState.skillText) syncImportedSkillMessage(skillAssistantState);
   document.getElementById("anima-assistant-modal")?.classList.remove("hidden");
+  renderSkillAssistant();
+  if (
+    saved &&
+    skillAssistantState.skillText.length > DIRECT_SKILL_PROMPT_CHARS &&
+    skillAssistantState.skillMode !== "compiled"
+  ) {
+    const state = skillAssistantState;
+    state.skillLoading = true;
+    state.skillProgress = "正在整理历史 SKILL.md…";
+    renderSkillAssistant();
+    try {
+      const skillName = (Array.isArray(state.skillFileMeta) ? state.skillFileMeta : [])
+        .map((item) => item?.name)
+        .filter(Boolean)
+        .join("、") || "SKILL.md";
+      const compiled = await compileImportedSkillDocuments(
+        [{ name: skillName, size: state.skillText.length, text: state.skillText }],
+        (progress) => {
+          if (skillAssistantState === state) {
+            state.skillProgress = progress;
+            renderSkillAssistant();
+          }
+        },
+      );
+      if (skillAssistantState !== state) return;
+      state.skillText = compiled.text;
+      state.skillMode = compiled.mode;
+    } catch (error) {
+      state.error = error?.message || "历史 SKILL.md 整理失败";
+    } finally {
+      if (skillAssistantState === state) {
+        state.skillLoading = false;
+        state.skillProgress = "";
+        syncImportedSkillMessage(state);
+        saveSkillAssistantHistory();
+        renderSkillAssistant();
+      }
+    }
+  }
+  if (skillAssistantState?.skillText) syncImportedSkillMessage(skillAssistantState);
   renderSkillAssistant();
   if (saved) return;
   try {
