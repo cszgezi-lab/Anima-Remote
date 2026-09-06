@@ -1223,9 +1223,9 @@ function bindKnowledgeEvents(dictionaries) {
       typeof getAnimaConfig === "function" ? getAnimaConfig() : {};
     const apiConfig = fullConfig.api?.rag || {}; // 👈 这里必须加上 .rag
 
-    if (!apiConfig || !apiConfig.key) {
+    if (!apiConfig || !apiConfig.url || !apiConfig.model) {
       return toastr.warning(
-        "缺失向量模型 API Key！请先在 API 设置页面配置好 RAG 模型连接。",
+        "缺失向量模型地址或模型！请先在 API 设置页面配置好 RAG 模型连接。",
       );
     }
 

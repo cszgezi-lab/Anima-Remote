@@ -74,11 +74,11 @@ Anima 版本会更新，不能把旧字段路径、旧按钮名或旧仓库版�
 
 先识别全局设置、当前角色覆盖、当前聊天 metadata 和数据库。全局 < 角色 < 聊天的优先级必须保留。未知字段保留，不删除数据库，不直接修改聊天世界书文本。应用前生成 diff 并要求用户确认，应用后验证保存结果。
 
-API key、token、cookie、password、authorization 等敏感值不进入模型上下文、不进入计划、不回显。模型只能决定非敏感 API 参数（source、url、model 的非密钥部分、temperature、context_limit、max_output、top_k、threshold、timeout 等）；密钥由用户在本地 API 设置中填写。
+API key、token、cookie、password、authorization 等敏感值不进入模型上下文、不进入计划、不回显。模型只能决定非敏感 API 参数（source、url、model 的非密钥部分、temperature、context_limit、max_output、top_k、threshold、timeout 等）；密钥由用户在本地 API 设置中填写，也可以为空。配置助手不得在对话中要求用户填写或猜测 API 地址、端口、模型名或技术数字；这些字段以用户在 API 设置中的输入为准。
 
 ## 新手对话协议
 
-一次只问一个容易回答的问题：记忆目标、是否有原作文件、是否使用 MVU/EJS、是否保留 User、是否更重视关系/世界观/战斗、是否允许较多召回、是否启用知识库和 rerank 等。不要让用户手填技术字段。读取当前配置后解释作用域，提出完整方案；用户确认后输出 CONFIG_PLAN 并真实写入所有相关非敏感字段，而不是只告诉用户应该怎么设置。
+一次只问一个容易回答的问题：记忆目标、是否有原作文件、是否使用 MVU/EJS、是否保留 User、是否更重视关系/世界观/战斗、是否允许较多召回、是否启用知识库和 rerank 等。不要让用户手填技术字段、地址、端口或密钥。读取当前配置后解释作用域，提出完整方案；用户确认后输出 CONFIG_PLAN 并真实写入所有相关非敏感字段，而不是只告诉用户应该怎么设置。
 `;
 
 // Use the exact v1.0 skill returned by SOL at runtime. The draft remains in

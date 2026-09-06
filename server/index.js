@@ -19,6 +19,10 @@ const {
     sanitizeProxyHeaders,
     validateOutboundTarget,
 } = require("./outbound_policy");
+const {
+    createProviderHeaders,
+    normalizeProviderBaseUrl,
+} = require("./provider");
 
 let stProxyConfig = {
     enabled: false,
@@ -387,10 +391,15 @@ function processEchoLogic(
 
 // 辅助：获取向量
 async function getEmbedding(text, config, outboundPolicy = null) {
-    if (!config || !config.key) throw new Error("API Key missing");
+    if (!config || !config.url || !config.model)
+        throw new Error("Embedding API 配置缺失");
     let timeoutId = null;
     try {
-        const fetchUrl = `${config.url.replace(/\/+$/, "")}/embeddings`;
+        const enteredUrl = String(config.url).trim().replace(/\/+$/, "");
+        const baseUrl = normalizeProviderBaseUrl(enteredUrl);
+        const fetchUrl = /\/embeddings$/i.test(baseUrl)
+            ? baseUrl
+            : `${baseUrl}/embeddings`;
 
         if (outboundPolicy) {
             await validateOutboundTarget(fetchUrl, outboundPolicy);
@@ -407,10 +416,9 @@ async function getEmbedding(text, config, outboundPolicy = null) {
 
         const response = await fetch(fetchUrl, {
             method: "POST",
-            headers: {
+            headers: createProviderHeaders(config, {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${config.key}`,
-            },
+            }),
             body: JSON.stringify({
                 input: text,
                 model: config.model,
@@ -501,7 +509,7 @@ async function fetchRerank(
     config,
     outboundPolicy = null,
 ) {
-    if (!config || !config.key || !config.url)
+    if (!config || !config.url || !config.model)
         throw new Error("Rerank API 配置缺失");
     if (!documents || documents.length === 0) return [];
 
@@ -525,10 +533,9 @@ async function fetchRerank(
         );
         const response = await fetch(config.url, {
             method: "POST",
-            headers: {
+            headers: createProviderHeaders(config, {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${config.key}`,
-            },
+            }),
             body: JSON.stringify({
                 model: config.model,
                 query: query,
@@ -1555,8 +1562,8 @@ async function init(router, options = {}) {
     router.post("/test_connection", async (req, res) => {
         const { apiConfig } = req.body;
 
-        if (!apiConfig || !apiConfig.key) {
-            return res.status(400).send("缺少 API 配置或 Key");
+        if (!apiConfig || !apiConfig.url || !apiConfig.model) {
+            return res.status(400).send("缺少 API 地址或模型");
         }
 
         try {
@@ -1847,7 +1854,7 @@ async function init(router, options = {}) {
     router.post("/rebuild_vector_from_bm25", async (req, res) => {
         const { collectionId, apiConfig } = req.body;
         if (!collectionId) return res.status(400).send("Missing collectionId");
-        if (!apiConfig || !apiConfig.key)
+        if (!apiConfig || !apiConfig.url || !apiConfig.model)
             return res.status(400).send("Missing API Config");
 
         const safeName = collectionId.replace(
@@ -3511,7 +3518,7 @@ async function init(router, options = {}) {
 
         if (!collectionId) return res.status(400).send("Missing collectionId");
         // 校验 API 配置
-        if (!apiConfig || !apiConfig.key)
+        if (!apiConfig || !apiConfig.url || !apiConfig.model)
             return res.status(400).send("Missing API Config");
 
         const safeName = collectionId.replace(

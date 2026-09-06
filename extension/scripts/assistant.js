@@ -859,7 +859,7 @@ function renderSkillAssistant() {
       <button id="anima-skill-send" class="anima-btn primary" style="align-self:flex-end;" ${skillAssistantState.busy ? "disabled" : ""}><i class="fa-solid fa-paper-plane"></i> 发送</button>
     </div>`}
     ${error}
-    <div style="margin-top:10px; color:#a1a1aa; font-size:11px;">AI 只能决定非敏感配置字段。需要向量、总结或 Rerank 模型时，请先在 API 设置里填好对应密钥；助手不会替你猜测或回显密钥。</div>
+    <div style="margin-top:10px; color:#a1a1aa; font-size:11px;">AI 只能决定非敏感配置字段。API 地址、模型名和端口以你在 API 设置中的输入为准；API Key 可以留空，是否需要鉴权由你使用的服务决定。助手不会替你猜测、回显或索要密钥。</div>
   </div>`;
 
   const chat = document.getElementById("anima-skill-chat");
@@ -958,6 +958,10 @@ async function openSkillAssistant() {
     const snapshot = await discoverAssistantContext();
     skillAssistantState.discovery = snapshot;
     skillAssistantState.messages.push({ role: "system", content: buildSkillAgentSystemPrompt(snapshot) });
+    skillAssistantState.messages.push({
+      role: "system",
+      content: "额外执行规则：不要让用户在对话中填写或猜测 API 地址、端口、模型名或任何技术数字。API 字段以用户已经在设置面板填写的内容为准；如果缺少，只提示用户自行打开 API 设置。API Key 可以为空，不要索要、回显或生成密钥。",
+    });
     await runSkillAssistantTurn("我是新手，请按 SKILL 新手版开始配置。请一次只问我一个最基础的问题。" );
   } catch (error) {
     skillAssistantState.error = error?.message || "读取当前配置失败，无法启动 SKILL 配置助手。";
@@ -1260,9 +1264,11 @@ export function validateSkillConfigPlan(plan, discovery = {}, files = []) {
 
   const api = discovery?.api_readiness || {};
   const embeddingNeeded = rag.rag_enabled === true || rag.auto_vectorize === true || ["global", "character", "chat"].some((scope) => patches?.[scope]?.knowledge?.knowledge_base?.write_vector === true || patches?.[scope]?.knowledge?.write_vector === true);
-  if (embeddingNeeded && !(api.embedding?.configured && api.embedding?.credential_present)) errors.push("向量/知识库需要 Embedding，但当前未就绪");
-  if (rag.rerank_enabled === true && !(api.rerank?.configured && api.rerank?.credential_present)) errors.push("Rerank 已开启但 Rerank API 未就绪");
-  if (statusEnabled && !(api.status?.configured && api.status?.credential_present)) errors.push("Status 已开启但 Status API 未就绪");
+  // API keys are optional: keyless/self-hosted endpoints are valid. The
+  // endpoint and model still must be configured before an action can run.
+  if (embeddingNeeded && !api.embedding?.configured) errors.push("向量/知识库需要 Embedding 地址和模型，但当前未就绪");
+  if (rag.rerank_enabled === true && !api.rerank?.configured) errors.push("Rerank 已开启但 Rerank 地址和模型未就绪");
+  if (statusEnabled && !api.status?.configured) errors.push("Status 已开启但 Status 地址和模型未就绪");
   if (!discovery?.backend?.reachable && (plan?.knowledge_files?.some((item) => item.action === "import_and_bind") || (plan?.database_actions || []).some((item) => item.type !== "none" && item.type !== "rebind_only"))) errors.push("后端不可用，不能执行后端依赖动作");
 
   for (const action of plan?.database_actions || []) {
@@ -1309,7 +1315,7 @@ async function stageSkillKnowledgeImports(plan, files, context) {
   const kb = deepMergeSettings(currentKb, knowledgePatch);
   const kbConfig = kb.knowledge_base || {};
   const apiConfig = getAnimaConfig().api?.rag || {};
-  if (kbConfig.write_vector !== false && (!apiConfig.key || !apiConfig.model)) {
+  if (kbConfig.write_vector !== false && (!apiConfig.url || !apiConfig.model)) {
     throw new Error("知识库导入需要本机先配置 Embedding API；配置助手不会接收或猜测 API Key。");
   }
   const bm25 = getBm25Settings(context);
@@ -1644,8 +1650,8 @@ async function applyAssistantPlan(input) {
   const uploaded = [];
   if (plan.knowledge.files.length > 0) {
     const apiConfig = getAnimaConfig().api?.rag || {};
-    if (!apiConfig.key || !apiConfig.model) {
-      throw new Error("知识库导入需要先在 API 设置中配置向量模型和 API Key；其他配置已保存。");
+    if (!apiConfig.url || !apiConfig.model) {
+      throw new Error("知识库导入需要先在 API 设置中配置向量地址和模型；其他配置已保存。");
     }
 
     const dictRoot = getBm25Settings(context);
@@ -1772,8 +1778,8 @@ export async function applySkillAssistantPlan(plan, files = []) {
     const shouldImport = mergedKbSettings.kb_enabled === true && files.length > 0;
     if (shouldImport) {
       const apiConfig = getAnimaConfig().api?.rag || {};
-      if (!apiConfig.key || !apiConfig.model) {
-        throw new Error("知识库导入需要先在 API 设置中配置向量模型和 API Key；其他配置已保存。");
+      if (!apiConfig.url || !apiConfig.model) {
+        throw new Error("知识库导入需要先在 API 设置中配置向量地址和模型；其他配置已保存。");
       }
 
       const bm25 = getBm25Settings(context);

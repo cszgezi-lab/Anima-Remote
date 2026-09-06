@@ -14,8 +14,8 @@ export async function callBackend(endpoint, payload, method = "POST") {
   // 🔍 调试日志：看看它到底读到了哪里 (修复后可注释掉)
   // console.log("[Anima Debug] Config Source:", settings?.api?.rag ? "New (api.rag)" : "Old (rag)", apiCredentials);
 
-  if (method === "POST" && (!apiCredentials.key || !apiCredentials.model)) {
-    const errMsg = "缺少 API Key 或 Model 配置，请先在设置面板填写！";
+  if (method === "POST" && (!apiCredentials.url || !apiCredentials.model)) {
+    const errMsg = "缺少 API 地址或 Model 配置，请先在设置面板填写！";
     console.error(`[Anima Debug] ❌ 前端拦截: ${errMsg}`);
     // 强制弹窗
     if (window.toastr) toastr.error(errMsg, "Anima API 拦截");

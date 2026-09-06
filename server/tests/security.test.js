@@ -351,7 +351,7 @@ test("standalone HTTP runtime authenticates, isolates tenants, and rejects redir
             response.end();
             return;
         }
-        if (request.url === "/embeddings") {
+        if (request.url === "/embeddings" || request.url === "/v1/embeddings") {
             response.setHeader("Content-Type", "application/json");
             response.end(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }));
             return;

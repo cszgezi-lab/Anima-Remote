@@ -1705,15 +1705,15 @@ function bindRagEvents(settings) {
         // 备选: settings.rag (旧版位置，可能直接混在 rag 设置里)
         let apiCredentials = parentSettings.api?.rag;
 
-        if (!apiCredentials || !apiCredentials.key) {
+        if (!apiCredentials || !apiCredentials.url || !apiCredentials.model) {
           // 回退尝试：看看是不是混在 rag 设置对象里了
           apiCredentials = parentSettings.rag;
         }
 
         // 4. 最终校验
-        if (!apiCredentials || !apiCredentials.key) {
+        if (!apiCredentials || !apiCredentials.url || !apiCredentials.model) {
           toastr.error(
-            "未找到有效的 Embedding API Key。\n请检查：插件设置 -> API 设置 -> RAG 模型配置。",
+            "未找到有效的 Embedding 地址或模型。\n请检查：插件设置 -> API 设置 -> RAG 模型配置。",
           );
           $btn.prop("disabled", false).html(originHtml);
           $closeBtn.prop("disabled", false);
@@ -1726,13 +1726,6 @@ function bindRagEvents(settings) {
           url: apiCredentials.url,
           model: apiCredentials.model,
         });
-
-        if (!apiCredentials.key) {
-          toastr.error("未找到有效的 Embedding API Key，请先在设置中配置。");
-          $btn.prop("disabled", false).html(originHtml);
-          $closeBtn.prop("disabled", false);
-          return;
-        }
 
         // 3. 循环执行 (串行)
         let successDb = 0;

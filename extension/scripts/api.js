@@ -334,20 +334,16 @@ function redactApiConfig(config) {
  * @param {string} provider - API 提供商 (例如 "google", "openai")
  * @returns {string}
  */
-function processApiUrl(url, provider) {
+export function processApiUrl(url, provider) {
   if (!url) return "";
   url = url.trim().replace(/\/+$/, "");
   url = url.replace(/0\.0\.0\.0/g, "127.0.0.1");
 
-  if (
-    provider !== "google" &&
-    !url.includes("/v1") &&
-    !url.includes("/chat") &&
-    !url.includes("/models")
-  ) {
-    if (url.split("/").length <= 3) {
-      url = url + "/v1";
-    }
+  // Keep an explicitly entered path untouched.  For a bare host (including
+  // host:port), use the conventional OpenAI-compatible /v1 base at request
+  // time without rewriting the value saved in the settings UI.
+  if (provider !== "google" && /^https?:\/\/[^/]+$/i.test(url)) {
+    url = `${url}/v1`;
   }
   return url;
 }
@@ -1024,12 +1020,9 @@ function bindLogic(type) {
   // 1. 下拉框变动逻辑
   if (selectSource) {
     selectSource.addEventListener("change", () => {
-      // 只有当输入框为空时才自动填充，避免覆盖用户的反代地址
+      // 端点完全由用户决定；不要替用户填充供应商地址或端口。
       if (selectSource.value === "google") {
-        if (!inputUrl.value)
-          inputUrl.value = "https://generativelanguage.googleapis.com";
-      } else {
-        if (!inputUrl.value) inputUrl.value = "https://api.openai.com/v1";
+        return;
       }
     });
   }
@@ -1055,11 +1048,6 @@ function bindLogic(type) {
       const currentKey = inputKey.value;
       const currentModel = selectModel.value;
 
-      if (!currentKey) {
-        if (window.toastr) window.toastr.warning("请填写 API Key");
-        return;
-      }
-
       const originalHtml = btnTest.innerHTML;
       btnTest.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 请求中...`;
       btnTest.disabled = true; // 🟢 VS Code 现在不会报错了
@@ -1081,7 +1069,7 @@ function bindLogic(type) {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${currentKey}`,
+              ...(currentKey ? { Authorization: `Bearer ${currentKey}` } : {}),
             },
             body: configPayload,
           });
@@ -1174,11 +1162,6 @@ function bindLogic(type) {
       let url = inputUrl.value;
       const key = inputKey.value;
 
-      if (!key) {
-        if (window.toastr) window.toastr.warning("请填写 API Key");
-        return;
-      }
-
       const originalHtml = btnConnect.innerHTML;
       btnConnect.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 连接中...`;
       btnConnect.disabled = true;
@@ -1203,10 +1186,11 @@ function bindLogic(type) {
               baseUrl = `${baseUrl}/v1beta/models`;
             }
             fetchUrl = baseUrl;
-            headers = { Authorization: `Bearer ${key}` };
+            if (key) headers.Authorization = `Bearer ${key}`;
           } else {
             // 官方直连模式
-            fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`;
+            fetchUrl = "https://generativelanguage.googleapis.com/v1beta/models";
+            if (key) fetchUrl += `?key=${encodeURIComponent(key)}`;
           }
 
           const res = await proxyFetch(fetchUrl, { headers });
@@ -1233,16 +1217,16 @@ function bindLogic(type) {
             // 注意：这里不要覆盖 inputUrl.value，保留用户输入的完整 rerank url 供保存
           } else {
             url = processApiUrl(url, source);
-            inputUrl.value = url;
             modelsFetchUrl = url;
           }
 
+          const modelHeaders = {
+            "Content-Type": "application/json",
+            ...(key ? { Authorization: `Bearer ${key}` } : {}),
+          };
           const directResponse = await proxyFetch(`${modelsFetchUrl}/models`, {
             method: "GET",
-            headers: {
-              Authorization: `Bearer ${key}`,
-              "Content-Type": "application/json",
-            },
+            headers: modelHeaders,
           });
 
           if (directResponse.ok) {
@@ -1463,14 +1447,8 @@ export async function generateText(
     console.log(`[Anima Debug] 发起 ${purpose} 请求...`);
     console.log(`[Anima Debug] 读到的配置:`, redactApiConfig(config));
 
-    if (!config || !config.key) {
-      if (config.source !== "openai" && config.source !== "google") {
-        // 允许无 key
-      } else {
-        throw new Error(
-          `未配置 ${purpose.toUpperCase()} 的 API Key 或 URL (请检查设置面板)`,
-        );
-      }
+    if (!config) {
+      throw new Error(`未配置 ${purpose.toUpperCase()} 的 API 设置`);
     }
 
     const { source, key, model, stream } = config;
@@ -1595,9 +1573,10 @@ export async function generateText(
             );
         }
         targetUrl = baseUrl;
-        headers["Authorization"] = `Bearer ${key}`;
+        if (key) headers["Authorization"] = `Bearer ${key}`;
       } else {
-        targetUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${methodAction}?key=${key}`;
+        targetUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${methodAction}`;
+        if (key) targetUrl += `?key=${encodeURIComponent(key)}`;
       }
 
       // 🔴 [DEBUG] 打印 Google 请求日志
@@ -1803,12 +1782,13 @@ export async function generateText(
       try {
         throwIfAborted(signal);
 
+        const providerHeaders = {
+          "Content-Type": "application/json",
+          ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        };
         const response = await proxyFetch(endpoint, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${key}`,
-          },
+          headers: providerHeaders,
           body: requestBody,
           isStream: !!stream,
           signal,
