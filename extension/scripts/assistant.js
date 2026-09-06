@@ -196,6 +196,15 @@ function syncImportedSkillMessage(state) {
   const withoutImportedSkill = (Array.isArray(state.messages) ? state.messages : []).filter(
     (message) => !String(message?.content || "").startsWith(IMPORTED_SKILL_MESSAGE_MARKER),
   );
+  const builtInPromptIndex = withoutImportedSkill.findIndex(
+    (message) => message?.role === "system" && String(message.content || "").includes("实际配置规划代理"),
+  );
+  if (builtInPromptIndex >= 0 && state.discovery) {
+    withoutImportedSkill[builtInPromptIndex] = {
+      role: "system",
+      content: buildSkillAgentSystemPrompt(state.discovery, { compact: Boolean(state.skillText) }),
+    };
+  }
   if (state.skillText) {
     const firstConversationIndex = withoutImportedSkill.findIndex((message) => message?.role !== "system");
     const insertAt = firstConversationIndex < 0 ? withoutImportedSkill.length : firstConversationIndex;
@@ -537,8 +546,21 @@ export function parseSkillAssistantResponse(text) {
   throw new Error("配置助手返回的 JSON 既不是问题，也不是配置方案。");
 }
 
-function buildSkillAgentSystemPrompt(snapshot = {}) {
-  return `你是“${ANIMA_SKILL_NAME}”的实际配置规划代理，不是教程讲解员，也不是直接持有存储权限的自由执行器。\n\n${ANIMA_SKILL_TEXT}\n\n当前脱敏 DISCOVERY_CONTEXT：\n${JSON.stringify(snapshot, null, 2)}\n\n必须遵守 Discover → Interview → Plan → Validate → Diff → Confirm → Apply → Readback → Rollback/Report。你只能读取 DISCOVERY_CONTEXT 并生成 JSON，不能声称已经保存。每次只问一个新手能回答的问题，不要让用户填写技术数字，不要让用户粘贴密钥。\n\n每次只能返回一个 RAW JSON object，不要 Markdown 代码块：\n1. 继续提问：{"response_type":"question","user_message":"给用户看的问题","question":{"id":"memory_style","kind":"single_choice","choices":[{"value":"conservative","label":"少而准，省 token"},{"value":"enhanced","label":"多想起一些旧事"},{"value":"auto","label":"帮我自动判断"}]},"config_plan":null}\n2. 需要本地动作：{"response_type":"local_action","user_message":"请先选择文件","local_action":{"type":"open_file_picker","accept":[".txt",".md",".json"]},"config_plan":null}\n3. 生成方案：{"response_type":"plan","user_message":"方案已生成，请先查看差异","config_plan":{...完整 CONFIG_PLAN...}}\n4. 错误：{"response_type":"error","user_message":"发生了什么","error":{"code":"...","recoverable":true},"config_plan":null}\n\nCONFIG_PLAN 示例结构（必须完整满足字段要求，实际 patch 只放需要改的字段）：\n${JSON.stringify(ASSISTANT_PLAN_SCHEMA, null, 2)}\n\n生成方案前必须确认记忆目标、User 是否作为长期证据、外部资料、状态权威、召回档位和 API 依赖。Summary 标签和分布式检索必须联动；Promise/First/RoutineFormed 等 Summary special 若强制召回必须进入 important.labels，不能错误放入 runtime special.labels。important.labels 按最坏情况逐标签乘 count 计算预算。若 discovery 显示 MVU/EJS，status_enabled=false，除非用户明确给出完整双状态同步契约。`;
+const COMPACT_SKILL_RULES = `
+这是 Anima Remote 的压缩执行规则。你是配置规划代理，不是教程讲解员：先读取脱敏 DISCOVERY_CONTEXT，再生成严格 CONFIG_PLAN；不要声称已经保存，必须等宿主 Diff/确认/Apply/Readback。
+- 绝不要求、生成、猜测或回显 API Key、Token、Cookie、Password、Authorization；API 地址、端口、模型名以当前 API 设置为准。
+- 不把原作/知识库文件当成当前剧情；不删除数据库、未知字段或聊天历史；数组整体替换，对象深度合并。
+- Summary、User 记忆策略、RAG、完整分布式检索、BM25、Rerank、知识库、状态变量和 global/character/chat 作用域都必须按用户目标生成，不得只给教程。
+- 分布式检索必须和 Summary 标签、最坏情况预算、候选倍数、diversity、recent/echo、注入设置联动；重要标签不能无限堆叠。
+- 检测到 MVU/EJS/其他外部状态权威时默认关闭 Anima 状态；双状态必须有用户明确的同步契约。
+- 只有用户确认后宿主才会写入；应用后必须读回验证，失败时回滚可回滚设置。
+`;
+
+function buildSkillAgentSystemPrompt(snapshot = {}, options = {}) {
+  const compact = options.compact === true;
+  const builtInRules = compact ? COMPACT_SKILL_RULES : ANIMA_SKILL_TEXT;
+  const schema = JSON.stringify(ASSISTANT_PLAN_SCHEMA, null, compact ? 0 : 2);
+  return `你是“${ANIMA_SKILL_NAME}”的实际配置规划代理，不是教程讲解员，也不是直接持有存储权限的自由执行器。\n\n${builtInRules}\n\n当前脱敏 DISCOVERY_CONTEXT：\n${JSON.stringify(snapshot, null, compact ? 0 : 2)}\n\n必须遵守 Discover → Interview → Plan → Validate → Diff → Confirm → Apply → Readback → Rollback/Report。你只能读取 DISCOVERY_CONTEXT 并生成 JSON，不能声称已经保存。每次只问一个新手能回答的问题，不要让用户填写技术数字，不要让用户粘贴密钥。\n\n每次只能返回一个 RAW JSON object，不要 Markdown 代码块：\n1. 继续提问：{"response_type":"question","user_message":"给用户看的问题","question":{"id":"memory_style","kind":"single_choice","choices":[{"value":"conservative","label":"少而准，省 token"},{"value":"enhanced","label":"多想起一些旧事"},{"value":"auto","label":"帮我自动判断"}]},"config_plan":null}\n2. 需要本地动作：{"response_type":"local_action","user_message":"请先选择文件","local_action":{"type":"open_file_picker","accept":[".txt",".md",".json"]},"config_plan":null}\n3. 生成方案：{"response_type":"plan","user_message":"方案已生成，请先查看差异","config_plan":{...完整 CONFIG_PLAN...}}\n4. 错误：{"response_type":"error","user_message":"发生了什么","error":{"code":"...","recoverable":true},"config_plan":null}\n\nCONFIG_PLAN 示例结构（必须完整满足字段要求，实际 patch 只放需要改的字段）：\n${schema}\n\n生成方案前必须确认记忆目标、User 是否作为长期证据、外部资料、状态权威、召回档位和 API 依赖。Summary 标签和分布式检索必须联动；Promise/First/RoutineFormed 等 Summary special 若强制召回必须进入 important.labels，不能错误放入 runtime special.labels。important.labels 按最坏情况逐标签乘 count 计算预算。若 discovery 显示 MVU/EJS，status_enabled=false，除非用户明确给出完整双状态同步契约。`;
 }
 
 export function parseSkillAgentResponse(text) {
