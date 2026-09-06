@@ -339,12 +339,10 @@ export function processApiUrl(url, provider) {
   url = url.trim().replace(/\/+$/, "");
   url = url.replace(/0\.0\.0\.0/g, "127.0.0.1");
 
-  // Keep an explicitly entered path untouched.  For a bare host (including
-  // host:port), use the conventional OpenAI-compatible /v1 base at request
-  // time without rewriting the value saved in the settings UI.
-  if (provider !== "google" && /^https?:\/\/[^/]+$/i.test(url)) {
-    url = `${url}/v1`;
-  }
+  // Do not infer provider-specific path segments here.  Some compatible
+  // endpoints use /v1 while others expose /chat/completions directly; the
+  // user-entered path is authoritative.  The chat-completions request adds
+  // only that operation suffix at the call site below.
   return url;
 }
 
@@ -1754,7 +1752,7 @@ export async function generateText(
       });
 
       // 2. URL 构造
-      // processApiUrl 会自动处理 /v1 后缀
+      // processApiUrl 保留用户填写的路径；这里只自动补请求操作后缀。
       let targetUrl = processApiUrl(url, source);
       // 防御性清理：去掉末尾的 /chat/completions 或 /，我们下面手动加
       targetUrl = targetUrl

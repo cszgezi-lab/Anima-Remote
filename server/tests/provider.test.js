@@ -6,10 +6,10 @@ const {
     normalizeProviderBaseUrl,
 } = require("../provider");
 
-test("provider base URL adds /v1 only for a bare host", () => {
+test("provider base URL preserves a bare host without inferring /v1", () => {
     assert.equal(
         normalizeProviderBaseUrl("http://127.0.0.1:8050"),
-        "http://127.0.0.1:8050/v1",
+        "http://127.0.0.1:8050",
     );
     assert.equal(
         normalizeProviderBaseUrl("http://127.0.0.1:8050/custom"),

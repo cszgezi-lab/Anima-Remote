@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 
 import { processApiUrl } from "../scripts/api.js";
 
-test("host-only OpenAI-compatible URLs get /v1 at request time", () => {
+test("host-only provider URLs do not get an inferred /v1 path", () => {
   assert.equal(
     processApiUrl("http://127.0.0.1:8050", "openai"),
-    "http://127.0.0.1:8050/v1",
+    "http://127.0.0.1:8050",
   );
   assert.equal(
     processApiUrl("https://api.example.test", "openai"),
-    "https://api.example.test/v1",
+    "https://api.example.test",
   );
 });
 

@@ -2,9 +2,8 @@ function normalizeProviderBaseUrl(rawUrl) {
     const value = String(rawUrl || "").trim().replace(/\/+$/, "");
     if (!value) return "";
 
-    // A bare host (including host:port) uses the conventional OpenAI
-    // compatible /v1 base. Explicit paths remain exactly as entered.
-    if (/^https?:\/\/[^/]+$/i.test(value)) return `${value}/v1`;
+    // The configured path is authoritative. Some providers use /v1 while
+    // others expose /embeddings or another API directly at the host root.
     return value;
 }
 
