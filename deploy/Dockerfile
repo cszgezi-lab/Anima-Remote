@@ -31,7 +31,7 @@ COPY --chown=10001:10001 deploy/token-cli.js /app/deploy/token-cli.js
 
 RUN groupadd --gid 10001 anima \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/anima --shell /usr/sbin/nologin anima \
-    && mkdir -p /var/lib/anima \
+    && mkdir -p /app/server/data/bm25_indexes /var/lib/anima \
     && chown -R 10001:10001 /app /var/lib/anima /home/anima \
     && chmod 0755 /usr/local/bin/anima-entrypoint /usr/local/bin/anima-healthcheck
 

@@ -33,6 +33,7 @@ services:
       - type: bind
         source: ./deploy/data
         target: /var/lib/anima
+        read_only: false
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
