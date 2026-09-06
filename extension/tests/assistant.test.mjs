@@ -18,6 +18,7 @@ const {
   buildSkillSystemPrompt,
   calculateSkillRetrievalBudget,
   createAssistantPlan,
+  markdownToPlainText,
   parseSkillAgentResponse,
   parseSkillAssistantResponse,
   sanitizeAssistantPatch,
@@ -26,14 +27,29 @@ const {
 
 test("imported SKILL.md is treated as bounded configuration guidance", () => {
   const prompt = buildImportedSkillInstruction(
-    "Izumi.md",
+    "Izumi_SKILL.md",
     "请重点保留承诺和共同习惯。\napi_key: should-not-be-forwarded",
+    "direct",
   );
 
-  assert.match(prompt, /Izumi\.md/);
+  assert.match(prompt, /Izumi_SKILL\.md/);
   assert.match(prompt, /承诺和共同习惯/);
   assert.match(prompt, /宿主的安全规则/);
   assert.match(prompt, /\[本地敏感值已隐藏\]/);
+  assert.match(prompt, /已解析为普通文字/);
+});
+
+test("markdown skill is parsed to plain text before it enters the model prompt", () => {
+  const text = markdownToPlainText(
+    "# 配置规则\n\n- **保留承诺** [参考](https://example.com)\n\n```json\n{\"enabled\": true}\n```",
+  );
+
+  assert.match(text, /配置规则/);
+  assert.match(text, /保留承诺/);
+  assert.match(text, /参考/);
+  assert.match(text, /\{\"enabled\": true\}/);
+  assert.doesNotMatch(text, /(^|\n)#/);
+  assert.doesNotMatch(text, /```/);
 });
 
 test("assistant disables Anima state when an external variable system is selected", () => {
