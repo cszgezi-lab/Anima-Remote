@@ -14,6 +14,7 @@ globalThis.window = {
 globalThis.SillyTavern = globalThis.window.SillyTavern;
 
 const {
+  buildImportedSkillInstruction,
   buildSkillSystemPrompt,
   calculateSkillRetrievalBudget,
   createAssistantPlan,
@@ -22,6 +23,18 @@ const {
   sanitizeAssistantPatch,
   validateSkillConfigPlan,
 } = await import("../scripts/assistant.js");
+
+test("imported SKILL.md is treated as bounded configuration guidance", () => {
+  const prompt = buildImportedSkillInstruction(
+    "Izumi.md",
+    "请重点保留承诺和共同习惯。\napi_key: should-not-be-forwarded",
+  );
+
+  assert.match(prompt, /Izumi\.md/);
+  assert.match(prompt, /承诺和共同习惯/);
+  assert.match(prompt, /宿主的安全规则/);
+  assert.match(prompt, /\[本地敏感值已隐藏\]/);
+});
 
 test("assistant disables Anima state when an external variable system is selected", () => {
   const plan = createAssistantPlan({

@@ -47,7 +47,9 @@ API Key、Token、Cookie 和密码不会进入模型上下文，也不会由模�
 
 SKILL 新手版使用 `CONFIG_PLAN` 协议：AI 只生成脱敏计划，前端本地执行器负责 Schema/安全/作用域/召回预算校验，展示差异后等待确认。应用前会创建本地快照，知识库文件先导入后绑定；保存或 Readback 失败会回滚全局、角色和聊天设置，新上传但未绑定的数据库不会自动删除。正式协议文件位于 [Anima_Remote_可执行配置_SKILL_v1.0.md](Anima_Remote_可执行配置_SKILL_v1.0.md)，Schema 位于 [config_plan_schema.json](../extension/config/config_plan_schema.json)。
 
-配置助手的 SKILL 对话会保存在当前 Tavern 聊天的本地 `chatMetadata` 中，关闭窗口、切换页面或重新打开后可以恢复；这份对话不会进入 Anima Remote 的远程设置同步。记录按当前角色/聊天隔离，助手界面中的“删除本地记录”只删除当前记录。历史中记录的文件仅保存文件名，重新打开后需要重新选择文件，文件内容不会写入历史。
+配置助手的 SKILL 对话会保存在当前 Tavern 聊天的本地 `chatMetadata` 中，关闭窗口、切换页面或重新打开后可以恢复；这份对话不会进入 Anima Remote 的远程设置同步。记录按当前角色/聊天隔离，助手界面中的“删除本地记录”只删除当前记录。历史中的原作/知识库文件仅保存文件名，重新打开后需要重新选择文件，原作文件内容不会写入历史。
+
+在 SKILL 助手的同一个“原作/世界观/配置 SKILL 文件”选择框中，也可以选择 `SKILL.md`。文件名中包含 `SKILL` 的 Markdown 会同时作为知识库候选文件，并读取其内容作为本次配置的用户规则和写作规范，帮助模型生成完整 CONFIG_PLAN；普通原作/世界观文件不会被误当成指令。SKILL 文本会随当前本地助手历史保存，且仍受宿主安全规则、Schema、密钥保护、用户确认和 Readback/Rollback 流程约束。
 
 ## API 怎么配置
 
