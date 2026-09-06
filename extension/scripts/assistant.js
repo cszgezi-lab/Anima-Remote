@@ -66,6 +66,7 @@ let skillAssistantState = null;
 
 const SKILL_ASSISTANT_HISTORY_VERSION = 1;
 const SKILL_ASSISTANT_HISTORY_PREFIX = "anima_skill_assistant_history_v1";
+const SKILL_ASSISTANT_HISTORY_METADATA_KEY = "__anima_skill_assistant_history_v1";
 
 const SECRET_FIELD_RE = /(?:^|[_-])(?:key|token|secret|password|cookie|authorization|bearer|transport|access[_-]?token|refresh[_-]?token|api[_-]?key)(?:$|[_-])|(?:key|token|secret|password|cookie|authorization|bearer|transport)$/i;
 const UNSAFE_PATCH_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -83,18 +84,22 @@ function getSkillAssistantHistoryKey() {
 }
 
 function saveSkillAssistantHistory() {
-  if (!skillAssistantState || !window.localStorage) return;
+  if (!skillAssistantState) return;
   try {
+    const context = getContext();
     const messages = Array.isArray(skillAssistantState.messages) ? skillAssistantState.messages : [];
     const systemMessages = messages.filter((item) => item?.role === "system").slice(0, 2);
     const conversationMessages = messages.filter((item) => item?.role !== "system").slice(-48);
+    const selectedFiles = Array.isArray(skillAssistantState.files)
+      ? skillAssistantState.files.map((file) => String(file?.name || "")).filter(Boolean)
+      : [];
     const payload = {
       version: SKILL_ASSISTANT_HISTORY_VERSION,
       savedAt: Date.now(),
       messages: [...systemMessages, ...conversationMessages],
       uiMessages: Array.isArray(skillAssistantState.uiMessages) ? skillAssistantState.uiMessages.slice(-48) : [],
-      fileMeta: Array.isArray(skillAssistantState.files)
-        ? skillAssistantState.files.map((file) => String(file?.name || "")).filter(Boolean)
+      fileMeta: selectedFiles.length
+        ? selectedFiles
         : Array.isArray(skillAssistantState.fileMeta)
           ? skillAssistantState.fileMeta
           : [],
@@ -103,16 +108,35 @@ function saveSkillAssistantHistory() {
       applied: Boolean(skillAssistantState.applied),
       error: skillAssistantState.error || "",
     };
-    window.localStorage.setItem(getSkillAssistantHistoryKey(), JSON.stringify(payload));
+    // Store the conversation in the current Tavern chat metadata. The key is
+    // intentionally prefixed with two underscores, so transport.js does not
+    // include this private local history in Anima Remote settings sync.
+    if (context?.chatMetadata) {
+      context.chatMetadata[SKILL_ASSISTANT_HISTORY_METADATA_KEY] = payload;
+      const saveMetadata = context.saveMetadata;
+      if (typeof saveMetadata === "function") {
+        Promise.resolve(saveMetadata.call(context)).catch((error) => {
+          console.warn("[Anima Assistant] unable to save chat metadata history", error);
+        });
+      }
+    }
+    // Keep a browser-local fallback for the case where no chat is currently
+    // open. This is not the primary persistence path because some mobile
+    // WebViews clear localStorage when their extension page is recreated.
+    if (window.localStorage) {
+      window.localStorage.setItem(getSkillAssistantHistoryKey(), JSON.stringify(payload));
+    }
   } catch (error) {
     console.warn("[Anima Assistant] unable to save local skill history", error);
   }
 }
 
 function loadSkillAssistantHistory() {
-  if (!window.localStorage) return null;
   try {
-    const raw = window.localStorage.getItem(getSkillAssistantHistoryKey());
+    const context = getContext();
+    const metadataValue = context?.chatMetadata?.[SKILL_ASSISTANT_HISTORY_METADATA_KEY];
+    if (metadataValue?.version === SKILL_ASSISTANT_HISTORY_VERSION) return metadataValue;
+    const raw = window.localStorage?.getItem(getSkillAssistantHistoryKey());
     if (!raw) return null;
     const saved = JSON.parse(raw);
     if (
@@ -131,6 +155,16 @@ function loadSkillAssistantHistory() {
 
 function deleteSkillAssistantHistory() {
   try {
+    const context = getContext();
+    if (context?.chatMetadata && Object.hasOwn(context.chatMetadata, SKILL_ASSISTANT_HISTORY_METADATA_KEY)) {
+      delete context.chatMetadata[SKILL_ASSISTANT_HISTORY_METADATA_KEY];
+      const saveMetadata = context.saveMetadata;
+      if (typeof saveMetadata === "function") {
+        Promise.resolve(saveMetadata.call(context)).catch((error) => {
+          console.warn("[Anima Assistant] unable to delete chat metadata history", error);
+        });
+      }
+    }
     window.localStorage?.removeItem(getSkillAssistantHistoryKey());
   } catch (error) {
     console.warn("[Anima Assistant] unable to delete local skill history", error);
