@@ -64,12 +64,77 @@ const DEFAULT_STATE = {
 let assistantState = null;
 let skillAssistantState = null;
 
+const SKILL_ASSISTANT_HISTORY_VERSION = 1;
+const SKILL_ASSISTANT_HISTORY_PREFIX = "anima_skill_assistant_history_v1";
+
 const SECRET_FIELD_RE = /(?:^|[_-])(?:key|token|secret|password|cookie|authorization|bearer|transport|access[_-]?token|refresh[_-]?token|api[_-]?key)(?:$|[_-])|(?:key|token|secret|password|cookie|authorization|bearer|transport)$/i;
 const UNSAFE_PATCH_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const SKILL_API_TYPES = ["llm", "status", "rag", "rerank"];
 
 function getContext() {
   return window.SillyTavern?.getContext?.() || null;
+}
+
+function getSkillAssistantHistoryKey() {
+  const context = getContext();
+  const characterId = context?.characterId ?? "none";
+  const chatId = context?.chatId ?? "none";
+  return `${SKILL_ASSISTANT_HISTORY_PREFIX}:${encodeURIComponent(String(characterId))}:${encodeURIComponent(String(chatId))}`;
+}
+
+function saveSkillAssistantHistory() {
+  if (!skillAssistantState || !window.localStorage) return;
+  try {
+    const messages = Array.isArray(skillAssistantState.messages) ? skillAssistantState.messages : [];
+    const systemMessages = messages.filter((item) => item?.role === "system").slice(0, 2);
+    const conversationMessages = messages.filter((item) => item?.role !== "system").slice(-48);
+    const payload = {
+      version: SKILL_ASSISTANT_HISTORY_VERSION,
+      savedAt: Date.now(),
+      messages: [...systemMessages, ...conversationMessages],
+      uiMessages: Array.isArray(skillAssistantState.uiMessages) ? skillAssistantState.uiMessages.slice(-48) : [],
+      fileMeta: Array.isArray(skillAssistantState.files)
+        ? skillAssistantState.files.map((file) => String(file?.name || "")).filter(Boolean)
+        : Array.isArray(skillAssistantState.fileMeta)
+          ? skillAssistantState.fileMeta
+          : [],
+      discovery: skillAssistantState.discovery || null,
+      plan: skillAssistantState.plan || null,
+      applied: Boolean(skillAssistantState.applied),
+      error: skillAssistantState.error || "",
+    };
+    window.localStorage.setItem(getSkillAssistantHistoryKey(), JSON.stringify(payload));
+  } catch (error) {
+    console.warn("[Anima Assistant] unable to save local skill history", error);
+  }
+}
+
+function loadSkillAssistantHistory() {
+  if (!window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(getSkillAssistantHistoryKey());
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (
+      saved?.version !== SKILL_ASSISTANT_HISTORY_VERSION ||
+      !Array.isArray(saved.messages) ||
+      !Array.isArray(saved.uiMessages)
+    ) {
+      return null;
+    }
+    return saved;
+  } catch (error) {
+    console.warn("[Anima Assistant] unable to load local skill history", error);
+    return null;
+  }
+}
+
+function deleteSkillAssistantHistory() {
+  try {
+    window.localStorage?.removeItem(getSkillAssistantHistoryKey());
+  } catch (error) {
+    console.warn("[Anima Assistant] unable to delete local skill history", error);
+  }
 }
 
 function notify(message, kind = "info") {
@@ -831,7 +896,9 @@ function renderSkillAssistant() {
 
   const fileNames = skillAssistantState.files.length
     ? skillAssistantState.files.map((file) => escapeHtml(file.name)).join("、")
-    : "未选择文件";
+    : skillAssistantState.fileMeta?.length
+      ? `${skillAssistantState.fileMeta.map((name) => escapeHtml(name)).join("、")}（重新打开后需要重新选择文件）`
+      : "未选择文件";
   const plan = skillAssistantState.plan;
   const configPlan = plan?.configPlan || null;
   const error = skillAssistantState.error
@@ -840,7 +907,11 @@ function renderSkillAssistant() {
 
   body.innerHTML = `<div>
     <div style="padding:10px 12px; border:1px solid rgba(192,132,252,.25); border-radius:8px; background:rgba(168,85,247,.08); font-size:12px; color:#ddd6fe;">
-      这是内置的“${ANIMA_SKILL_NAME}”。AI 会读取当前配置并逐步询问你；它负责实际写入设置，不会把 API Key、Token 或 Cookie 发给模型。
+      <div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start; flex-wrap:wrap;">
+        <span>这是内置的“${ANIMA_SKILL_NAME}”。AI 会读取当前配置并逐步询问你；它负责实际写入设置，不会把 API Key、Token 或 Cookie 发给模型。</span>
+        <button id="anima-skill-clear-history" class="anima-btn secondary" style="white-space:nowrap;">删除本地记录</button>
+      </div>
+      <div style="margin-top:6px; color:#c4b5fd;">对话记录只保存在当前浏览器，并按当前角色卡/聊天区分，不会同步到 Anima 后端。</div>
     </div>
     <div id="anima-skill-chat" style="margin-top:12px; max-height:390px; overflow:auto; padding:4px 6px;">${messages || '<div style="color:#a1a1aa; padding:16px 0;">正在读取当前配置并准备第一个问题…</div>'}${skillAssistantState.busy ? '<div style="color:#c4b5fd; padding:8px 0;"><i class="fa-solid fa-spinner fa-spin"></i> 配置助手正在分析…</div>' : ""}</div>
     <div style="margin-top:10px; padding:10px; border-radius:8px; background:rgba(255,255,255,.04);">
@@ -853,7 +924,7 @@ function renderSkillAssistant() {
       <div style="margin-top:6px; color:#d4d4d8; font-size:12px;">作用范围：${escapeHtml(plan.scope_summary)}</div>
       <details open style="margin-top:8px;"><summary style="cursor:pointer; color:#c4b5fd;">查看修改差异</summary><pre style="max-height:220px; overflow:auto; white-space:pre-wrap; font-size:11px; color:#d4d4d8;">${escapeHtml(renderSkillDiff(configPlan))}</pre></details>
       <details style="margin-top:8px;"><summary style="cursor:pointer; color:#c4b5fd;">查看将要写入的完整字段</summary><pre style="max-height:260px; overflow:auto; white-space:pre-wrap; font-size:11px; color:#d4d4d8;">${escapeHtml(JSON.stringify(configPlan, null, 2))}</pre></details>
-      ${configPlan?.status === "ready" ? '<button id="anima-skill-apply" class="anima-btn primary" style="margin-top:10px;"><i class="fa-solid fa-check"></i> 确认并应用全部配置</button>' : '<div style="margin-top:10px; color:#fbbf24;">当前方案状态为 blocked/needs_input，不能应用；请先按提示补充条件。</div>'}
+      ${skillAssistantState.applied ? '<div style="margin-top:10px; color:#bbf7d0;"><i class="fa-solid fa-check"></i> 这套配置已经应用完成。</div>' : configPlan?.status === "ready" ? '<button id="anima-skill-apply" class="anima-btn primary" style="margin-top:10px;"><i class="fa-solid fa-check"></i> 确认并应用全部配置</button>' : '<div style="margin-top:10px; color:#fbbf24;">当前方案状态为 blocked/needs_input，不能应用；请先按提示补充条件。</div>'}
     </div>` : `<div style="display:flex; gap:8px; margin-top:10px;">
       <textarea id="anima-skill-input" class="anima-textarea" rows="2" placeholder="直接回答上面的问题，例如：这是 MVU 卡，主要想记住承诺和共同习惯。" ${skillAssistantState.busy ? "disabled" : ""}></textarea>
       <button id="anima-skill-send" class="anima-btn primary" style="align-self:flex-end;" ${skillAssistantState.busy ? "disabled" : ""}><i class="fa-solid fa-paper-plane"></i> 发送</button>
@@ -865,8 +936,18 @@ function renderSkillAssistant() {
   const chat = document.getElementById("anima-skill-chat");
   if (chat) chat.scrollTop = chat.scrollHeight;
 
+  document.getElementById("anima-skill-clear-history")?.addEventListener("click", () => {
+    if (typeof window.confirm === "function" && !window.confirm("确定删除当前角色/聊天的 SKILL 配置助手记录吗？删除后无法恢复。")) return;
+    deleteSkillAssistantHistory();
+    skillAssistantState = null;
+    modal.classList.add("hidden");
+    notify("已删除当前聊天的本地配置助手记录。", "success");
+  });
+
   document.getElementById("anima-skill-files")?.addEventListener("change", (event) => {
     skillAssistantState.files = Array.from(event.target.files || []);
+    skillAssistantState.fileMeta = skillAssistantState.files.map((file) => file.name);
+    saveSkillAssistantHistory();
     renderSkillAssistant();
   });
   const send = () => {
@@ -893,6 +974,8 @@ function renderSkillAssistant() {
         skillAssistantState.discovery,
         skillAssistantState.files,
       );
+      skillAssistantState.applied = true;
+      saveSkillAssistantHistory();
       closeAssistant();
       notify(
         result.uploaded.length
@@ -910,17 +993,19 @@ function renderSkillAssistant() {
 }
 
 async function runSkillAssistantTurn(userText) {
-  if (!skillAssistantState || skillAssistantState.busy) return;
+  const state = skillAssistantState;
+  if (!state || state.busy) return;
   const safeText = redactUserInput(userText);
-  const files = skillAssistantState.files.map((file) => file.name);
+  const files = state.files.map((file) => file.name);
   const prompt = files.length
     ? `${safeText}\n\n本次界面已选择文件：${files.join("、")}。只把它们视为待导入外部资料，不要把其内容当成已发生剧情。`
     : safeText;
 
-  skillAssistantState.error = "";
-  skillAssistantState.busy = true;
-  skillAssistantState.messages.push({ role: "user", content: prompt });
-  skillAssistantState.uiMessages.push({ role: "user", display: userText });
+  state.error = "";
+  state.busy = true;
+  state.messages.push({ role: "user", content: prompt });
+  state.uiMessages.push({ role: "user", display: safeText });
+  saveSkillAssistantHistory();
   renderSkillAssistant();
 
   try {
@@ -930,52 +1015,76 @@ async function runSkillAssistantTurn(userText) {
     // still producing its plan.
     const llmConfig = getAnimaConfig().api?.llm || {};
     const raw = await generateText(
-      skillAssistantState.messages,
+      state.messages,
       "llm",
       { ...llmConfig, stream: false },
       { timeoutMs: 120_000 },
     );
+    if (skillAssistantState !== state) return;
     const result = parseSkillAgentResponse(raw);
-    skillAssistantState.messages.push({ role: "assistant", content: raw });
-    skillAssistantState.uiMessages.push({
+    state.messages.push({ role: "assistant", content: raw });
+    state.uiMessages.push({
       role: "assistant",
       display: result.type === "QUESTION"
         ? `${result.question}${result.why ? `\n\n为什么问：${result.why}` : ""}`
         : result.message || result.assistant_message,
     });
-    if (result.type === "CONFIG_PLAN") skillAssistantState.plan = result;
+    if (result.type === "CONFIG_PLAN") state.plan = result;
+    saveSkillAssistantHistory();
   } catch (error) {
-    skillAssistantState.error = error?.message || "配置助手请求失败";
+    if (skillAssistantState === state) {
+      state.error = error?.message || "配置助手请求失败";
+      saveSkillAssistantHistory();
+    }
   } finally {
-    skillAssistantState.busy = false;
-    renderSkillAssistant();
+    if (skillAssistantState === state) {
+      state.busy = false;
+      saveSkillAssistantHistory();
+      renderSkillAssistant();
+    }
   }
 }
 
 async function openSkillAssistant() {
   ensureAssistantModal();
-  skillAssistantState = {
+  const saved = loadSkillAssistantHistory();
+  skillAssistantState = saved
+    ? {
+        ...saved,
+        files: [],
+        fileMeta: Array.isArray(saved.fileMeta) ? saved.fileMeta : [],
+        busy: false,
+        error: saved.error || "",
+      }
+    : {
     messages: [],
     uiMessages: [],
     files: [],
+    fileMeta: [],
     busy: false,
     plan: null,
     error: "",
-  };
+    };
   document.getElementById("anima-assistant-modal")?.classList.remove("hidden");
   renderSkillAssistant();
+  if (saved) return;
   try {
     const snapshot = await discoverAssistantContext();
+    if (!skillAssistantState) return;
     skillAssistantState.discovery = snapshot;
     skillAssistantState.messages.push({ role: "system", content: buildSkillAgentSystemPrompt(snapshot) });
     skillAssistantState.messages.push({
       role: "system",
       content: "额外执行规则：不要让用户在对话中填写或猜测 API 地址、端口、模型名或任何技术数字。API 字段以用户已经在设置面板填写的内容为准；如果缺少，只提示用户自行打开 API 设置。API Key 可以为空，不要索要、回显或生成密钥。",
     });
+    saveSkillAssistantHistory();
     await runSkillAssistantTurn("我是新手，请按 SKILL 新手版开始配置。请一次只问我一个最基础的问题。" );
   } catch (error) {
-    skillAssistantState.error = error?.message || "读取当前配置失败，无法启动 SKILL 配置助手。";
-    renderSkillAssistant();
+    if (skillAssistantState) {
+      skillAssistantState.error = error?.message || "读取当前配置失败，无法启动 SKILL 配置助手。";
+      saveSkillAssistantHistory();
+      renderSkillAssistant();
+    }
   }
 }
 
@@ -988,6 +1097,7 @@ function openAssistant() {
 }
 
 function closeAssistant() {
+  if (skillAssistantState) saveSkillAssistantHistory();
   document.getElementById("anima-assistant-modal")?.classList.add("hidden");
   assistantState = null;
   skillAssistantState = null;
